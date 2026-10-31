@@ -1227,7 +1227,8 @@ def process_pointing(
         write_fits(output_np, isim_np, fits_path,
                    pointing_ra, pointing_dec, pointing_pa, sca_num,
                    exptime, key_data, seed,
-                   extra_headers=extra_headers)
+                   extra_headers=extra_headers,
+                   poisson=sca_key is not None)
         t_fits = time.time() - t0
         t0 = time.time()
         write_png(output_np, png_path)

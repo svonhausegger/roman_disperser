@@ -112,6 +112,25 @@ class TestWriteFitsHeaders:
     def test_extra_headers_still_applied(self, written):
         assert written["MA_TABLE"] == 1036
 
+    def test_content_cards(self, tmp_path):
+        """BKGINCL/DETEFF/BUNIT/NOISE say what the products contain."""
+        img = np.zeros((4, 4), dtype=np.float32)
+        for poisson, noise in ((True, "POISSON-SRC"), (False, "NONE")):
+            path = tmp_path / f"out_{poisson}.fits"
+            write_fits(
+                img, img, str(path),
+                pointing_ra=9.5, pointing_dec=0.95, pointing_pa=0.0,
+                sca=5, exptime=190.22,
+                rng_key_data=np.zeros(2, dtype=np.uint32), seed=42,
+                poisson=poisson,
+            )
+            with fits.open(path) as hdul:
+                assert hdul[0].header["BKGINCL"] is False
+                assert hdul[0].header["DETEFF"] is False
+                assert hdul["MODEL"].header["BUNIT"] == "counts/s"
+                assert hdul["ISIM"].header["BUNIT"] == "counts"
+                assert hdul["ISIM"].header["NOISE"] == noise
+
 
 class TestDisperseBatchedSersicGalaxies:
     """Per-batch Sersic generation (the A10G OOM fix) passes the same inputs.
