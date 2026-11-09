@@ -76,6 +76,19 @@ import numpy as np
 import pyarrow.parquet as pq
 import zarr
 
+# Galaxy SEDs are decoded in a background thread while the main thread feeds
+# the GPU (process_pointing prefetches the next SCA). Blosc's own pool (8
+# threads, ignoring the Slurm CPU allocation) and zarr's default decode pool
+# would take every core and starve that main thread: galaxies ran ~7 % slower
+# on a 4-vCPU L40S node. One decode thread is enough to read the next SCA's
+# SEDs (~5 s) well inside the current SCA's GPU time (~40 s).
+zarr.config.set({"threading.max_workers": 1})
+try:
+    from numcodecs import blosc as _blosc
+    _blosc.set_nthreads(1)
+except ImportError:  # numcodecs without the Blosc extension
+    pass
+
 from roman_disperser import (
     elements, galaxy_disperser, psf_model, sersic, star_disperser,
 )
@@ -680,22 +693,29 @@ def validate_catalog(meta, store, wavelengths, element):
         arr = meta[col].values
         if np.any(~np.isfinite(arr.astype(float))):
             raise ValueError(f"NaN or Inf found in column '{col}'")
-    gal = meta[meta["type"] == "SER"]
+    # Boolean masks and column arrays rather than meta[...] row copies: the
+    # full catalog is ~16 M rows, and each DataFrame copy cost seconds.
+    is_ser = (meta["type"] == "SER").to_numpy()
+    is_psf = (meta["type"] == "PSF").to_numpy()
+    n_gal = int(is_ser.sum())
+
+    def gcol(col):
+        return meta[col].to_numpy()[is_ser]
+
     for col in ["n", "half_light_radius", "pa", "ba"]:
-        if np.any(~np.isfinite(gal[col].values.astype(float))):
+        if np.any(~np.isfinite(gcol(col).astype(float))):
             raise ValueError(f"NaN or Inf in galaxy column '{col}'")
-    if len(gal) and (np.any(gal["n"].values <= 0)
-                     or np.any(gal["ba"].values <= 0)
-                     or np.any(gal["half_light_radius"].values < 0)):
+    if n_gal and (np.any(gcol("n") <= 0)
+                  or np.any(gcol("ba") <= 0)
+                  or np.any(gcol("half_light_radius") < 0)):
         raise ValueError("Galaxy morphology out of range (n<=0, ba<=0 or r_e<0)")
     if np.any(meta["sed_index"].values < 0):
         raise ValueError("Negative sed_index found")
 
     # sed_index bounds for stars
-    stars = meta[meta["type"] == "PSF"]
-    if len(stars) > 0:
+    if is_psf.any():
         star_seds = store["star_seds"]
-        max_star_idx = int(stars["sed_index"].max())
+        max_star_idx = int(meta["sed_index"].to_numpy()[is_psf].max())
         if max_star_idx >= star_seds.shape[0]:
             raise ValueError(
                 f"Star sed_index {max_star_idx} exceeds star_seds size "
@@ -703,8 +723,7 @@ def validate_catalog(meta, store, wavelengths, element):
             )
 
     # Galaxy SED array existence (sim partitions, or HEALPix pixels)
-    galaxies = meta[meta["type"] == "SER"]
-    if len(galaxies) > 0:
+    if n_gal > 0:
         layout = galaxy_sed_layout(store)
         if layout == "healpix":
             missing = [c for c in ("hp_uniq", "hp_row") if c not in meta.columns]
@@ -713,20 +732,32 @@ def validate_catalog(meta, store, wavelengths, element):
                     f"galaxy_seds layout is 'healpix' but metadata lacks "
                     f"{missing}; use the metadata.parquet written with the store")
         group_col, array_key, _ = _GALAXY_SED_LAYOUTS[layout]
-        for val in galaxies[group_col].unique():
-            key = array_key(val)
-            if key not in store:
+
+        def array_width(key):
+            # One open per array (the metadata read); None if it is missing.
+            try:
+                return store[key].shape[1]
+            except KeyError:
+                return None
+
+        import pandas as pd
+        keys = [array_key(v) for v in pd.unique(gcol(group_col))]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            widths = list(pool.map(array_width, keys))
+        for key, width in zip(keys, widths):   # first problem in key order
+            if width is None:
                 raise ValueError(f"Missing Zarr array for partition: {key}")
-            if store[key].shape[1] != n_wl:
+            if width != n_wl:
                 raise ValueError(
-                    f"{key} has {store[key].shape[1]} wavelength bins but the "
+                    f"{key} has {width} wavelength bins but the "
                     f"catalog wavelength grid has {n_wl}. All SED arrays must "
                     f"share the 'wavelengths' grid (see data/catalogs/README.md)."
                 )
 
     # Morphology warnings
-    if len(galaxies) > 0:
-        large = galaxies["half_light_radius"] > 1.0
+    if n_gal > 0:
+        large = gcol("half_light_radius") > 1.0
         if large.any():
             n_large = int(large.sum())
             print(f"  WARNING: {n_large} galaxies have half_light_radius > 1 arcsec")
@@ -1052,7 +1083,7 @@ def _place_group_seds(spectra, galaxy_meta, group, seds_trimmed,
         spectra[pos] = seds_trimmed[j] * scales[j]
 
 
-def load_galaxy_seds(store, galaxy_meta, wl_mask):
+def load_galaxy_seds(store, galaxy_meta, wl_mask, n_threads=1):
     """Load galaxy SEDs from Zarr, grouping by array for efficient I/O.
 
     Two store layouts are supported (see ``_GALAXY_SED_LAYOUTS``):
@@ -1107,7 +1138,12 @@ def load_galaxy_seds(store, galaxy_meta, wl_mask):
     # releases the GIL); the results are consumed in group order, so the
     # output is identical to a sequential read.
     from concurrent.futures import ThreadPoolExecutor
-    n_threads = max(1, min(len(groups), len(os.sched_getaffinity(0)), 8))
+    # Default 1: process_pointing calls this from a background thread while
+    # the main thread feeds the GPU, and more decode threads starve it (see
+    # the zarr/Blosc thread limits at the top of this script).
+    if n_threads is None:
+        n_threads = len(os.sched_getaffinity(0))
+    n_threads = max(1, min(len(groups), int(n_threads), 8))
     with ThreadPoolExecutor(max_workers=n_threads) as pool:
         trimmed = pool.map(read_group, groups)
         for (key_val, group), seds_trimmed in zip(groups, trimmed):
@@ -1669,7 +1705,54 @@ def process_pointing(
             psf_futures[sca_list[i]] = psf_prefetch.submit(
                 load_sca_psf_payloads, sca_list[i])
 
+    def select_and_load(sca_num):
+        """Source selection (+ per-order brightness cut) and the galaxy-SED
+        read of one SCA. Runs in a background thread one SCA ahead, so the
+        SED read (~3-4 s per SCA) overlaps the previous SCA's GPU work."""
+        t0 = time.time()
+        order_masks, any_mask = select_sources_per_order(
+            pipeline["sca_data"][sca_num]["optical_payloads"], xfpa, yfpa,
+            element.orders, element.lam_min, element.lam_max,
+        )
+        n_any = int(any_mask.sum())
+        mag_skipped = None
+        if order_mag_limits and n_any > 0:
+            order_masks, mag_skipped = apply_order_mag_limits(
+                order_masks, mag_cone, order_mag_limits)
+            any_mask = np.zeros(len(mag_cone), dtype=bool)
+            for order in element.orders:
+                any_mask |= order_masks[order]
+            n_any = int(any_mask.sum())
+        t_select = time.time() - t0
+        spectra, t_sed = None, 0.0
+        if n_any > 0:
+            any_np = np.asarray(any_mask)
+            gal_rows = np.where(any_np)[0][is_galaxy[any_np]]
+            if len(gal_rows):
+                t1 = time.time()
+                spectra = load_galaxy_seds(
+                    pipeline["store"], meta_cone_reset.iloc[gal_rows],
+                    pipeline["wl_mask"])
+                t_sed = time.time() - t1
+        return dict(order_masks=order_masks, any_mask=any_mask, n_any=n_any,
+                    mag_skipped=mag_skipped, t_select=t_select,
+                    galaxy_spectra=spectra, t_sed=t_sed)
+
+    sel_prefetch = ThreadPoolExecutor(max_workers=1)
+    sel_futures = {}
+
+    def prefetch_sel(i):
+        if i < len(sca_list) and sca_list[i] not in sel_futures:
+            sel_futures[sca_list[i]] = sel_prefetch.submit(
+                select_and_load, sca_list[i])
+
+    # Per-SCA FITS and PNG writes run in a background thread; all are
+    # joined (and any error raised) before the pointing's mosaic/manifest.
+    io_pool = ThreadPoolExecutor(max_workers=1)
+    io_futures = []
+
     prefetch_psf(0)
+    prefetch_sel(0)
     for i_sca, sca_num in enumerate(sca_list):
         log(f"\n  SCA {sca_num}:")
         t_sca = time.time()
@@ -1696,6 +1779,7 @@ def process_pointing(
             with afits.open(fits_path) as hdul:
                 sca_model_np[sca_num] = hdul["MODEL"].data.copy()
             psf_futures.pop(sca_num, None)  # drop a prefetched payload
+            sel_futures.pop(sca_num, None)
             continue
 
         # -- Build dispersers and JIT-compile for this SCA -------------------
@@ -1709,6 +1793,7 @@ def process_pointing(
         t_psfload = time.time()
         payloads_by_filter, psf_payloads = psf_futures.pop(sca_num).result()
         prefetch_psf(i_sca + 1)
+        prefetch_sel(i_sca)
         log(f"    PSF caches: {time.time() - t_psfload:.2f}s (prefetched)")
 
         star_fori_fns, galaxy_fori_fns = make_order_fori_fns(
@@ -1758,25 +1843,21 @@ def process_pointing(
         log(f"    JIT compile: {time.time() - t_jit:.1f}s")
 
         # -- Select sources for this SCA (per order) -------------------------
-        t_select = time.time()
-        order_masks, any_mask = select_sources_per_order(
-            sd["optical_payloads"], xfpa, yfpa,
-            element.orders, element.lam_min, element.lam_max,
-        )
-        n_any = int(any_mask.sum())
+        # Selection and per-order brightness cut (faint orders: AND
+        # mag <= limit into the order masks; a source cut from every order
+        # leaves any_mask) were computed by select_and_load, one SCA ahead.
+        t_wait = time.time()
+        sel = sel_futures.pop(sca_num).result()
+        t_wait = time.time() - t_wait
+        prefetch_sel(i_sca + 1)
+        order_masks, any_mask = sel["order_masks"], sel["any_mask"]
+        n_any = sel["n_any"]
+        mag_skipped = sel["mag_skipped"]
 
         sca_counts = {order: {"stars": 0, "galaxies": 0} for order in element.orders}
         source_counts[sca_num] = sca_counts
 
-        # Per-order brightness cut (faint orders): AND mag <= limit into the
-        # order masks; a source cut from every order leaves any_mask.
-        if order_mag_limits and n_any > 0:
-            order_masks, mag_skipped = apply_order_mag_limits(
-                order_masks, mag_cone, order_mag_limits)
-            any_mask = np.zeros(len(mag_cone), dtype=bool)
-            for order in element.orders:
-                any_mask |= order_masks[order]
-            n_any = int(any_mask.sum())
+        if mag_skipped is not None:
             for order in order_mag_limits:
                 sk = mag_skipped[order]
                 sca_counts[order]["stars_mag_cut"] = int((sk & is_star).sum())
@@ -1845,7 +1926,7 @@ def process_pointing(
             n_stars_sel = int(is_star_sel.sum())
             n_galaxies_sel = int(is_galaxy_sel.sum())
             log(f"    Selected: {n_stars_sel} stars, {n_galaxies_sel} galaxies "
-                f"in {time.time() - t_select:.2f}s")
+                f"in {sel['t_select']:.2f}s (prefetched; waited {t_wait:.2f}s)")
 
             cone_indices = np.where(any_mask_np)[0]
             star_cone_indices = np.where(is_star)[0]
@@ -1858,16 +1939,13 @@ def process_pointing(
             galaxy_sersic = None
             galaxy_spectra_sel = None
             if n_galaxies_sel > 0:
-                t0 = time.time()
                 gal_sel_meta = meta_cone_reset.iloc[
                     cone_indices[is_galaxy_sel]
                 ]
-                galaxy_spectra_sel = load_galaxy_seds(
-                    pipeline["store"], gal_sel_meta, pipeline["wl_mask"],
-                )
+                galaxy_spectra_sel = sel["galaxy_spectra"]
                 log(f"    Galaxy SEDs: {n_galaxies_sel} spectra "
                     f"({galaxy_spectra_sel.nbytes / 1e6:.1f} MB) "
-                    f"in {time.time() - t0:.2f}s")
+                    f"in {sel['t_sed']:.2f}s (prefetched)")
                 # Per-galaxy Sersic parameters only. The images themselves
                 # are generated per dispersion batch inside
                 # disperse_batched_sersic_galaxies, so GPU memory does not
@@ -2042,24 +2120,34 @@ def process_pointing(
                 f"{n_inf} Inf pixels in bbox "
                 f"x[{xs.min()},{xs.max()}] y[{ys.min()},{ys.max()}]")
 
-        # Write per-SCA outputs
-        t0 = time.time()
-        write_fits(output_np, isim_np, fits_path,
-                   pointing_ra, pointing_dec, pointing_pa, sca_num,
-                   exptime, key_data, seed,
-                   extra_headers=extra_headers,
-                   poisson=sca_key is not None)
-        t_fits = time.time() - t0
-        t0 = time.time()
-        write_png(output_np, png_path)
-        t_png = time.time() - t0
+        # Write per-SCA outputs (background thread; joined after the loop)
+        def write_outputs(output_np=output_np, isim_np=isim_np,
+                          fits_path=fits_path, png_path=png_path,
+                          sca_num=sca_num, key_data=key_data,
+                          poisson=sca_key is not None):
+            write_fits(output_np, isim_np, fits_path,
+                       pointing_ra, pointing_dec, pointing_pa, sca_num,
+                       exptime, key_data, seed,
+                       extra_headers=extra_headers, poisson=poisson)
+            write_png(output_np, png_path)
+        io_futures.append(io_pool.submit(write_outputs))
 
         elapsed_sca = time.time() - t_sca
-        log(f"    I/O: transfer {t_transfer:.2f}s, "
-            f"FITS {t_fits:.2f}s, PNG {t_png:.2f}s")
+        log(f"    I/O: transfer {t_transfer:.2f}s, FITS + PNG queued")
         log(f"    Total: {elapsed_sca:.2f}s, flux={output_np.sum():.4e}, "
             f"peak={output_np.max():.4e}")
         log(f"    Memory: {memory_report()}")
+
+    # Join the background writers (re-raises any write error) and stop the
+    # prefetch threads.
+    t0 = time.time()
+    for fut in io_futures:
+        fut.result()
+    io_pool.shutdown()
+    sel_prefetch.shutdown(cancel_futures=True)
+    psf_prefetch.shutdown(cancel_futures=True)
+    if io_futures:
+        log(f"\n  Per-SCA FITS/PNG writes finished (waited {time.time() - t0:.2f}s)")
 
     # -- Mosaic PNG ----------------------------------------------------------
     if len(sca_list) > 1:
