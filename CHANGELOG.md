@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **FITS header cards that say what the products contain**, so ISIM is not
+  mistaken for a full-noise image once it travels without romanisim.
+  Primary header: `BKGINCL = F` (no sky/zodi background) and `DETEFF = F`
+  (no dark, read noise, IPC, cosmic rays or non-linearity). `BUNIT` on
+  MODEL (`counts/s`) and ISIM (`counts`), in the units of the SENSITIVITY
+  tables. `NOISE` on ISIM: `'POISSON-SRC'` for the Poisson draw of the
+  source counts, `'NONE'` when `process_pointing` has no `pointing_key` and
+  ISIM is the noiseless MODEL*exptime (new `write_fits(..., poisson=False)`,
+  default `True`). No pixel values change.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
