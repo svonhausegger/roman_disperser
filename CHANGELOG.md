@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Manifest `xsca`/`ysca` documentation** (`docs/grism_pipeline.md` and the
+  comment in `build_dispersed_image.py`): they were described as the
+  "undispersed" SCA position. They are the nominal position from the linear
+  `fpa_to_sca` label map without distortion, about 36-190 px from where
+  order-1 light lands, and not an imaging-mode position either.
+  Documentation only; the manifest values are unchanged.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
