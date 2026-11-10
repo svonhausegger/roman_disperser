@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **No more silent PSF cache regeneration.** When a PSF cache is missing or
+  invalid, `psf_model.get_or_make_psf_payload` now gives a `RuntimeWarning`
+  naming the file before it generates a new grid with the local STPSF (before,
+  only a `print` behind `verbose`). With the new environment variable
+  `ROMAN_DISPERSER_REQUIRE_PSF_CACHE` set, it raises `FileNotFoundError`
+  instead, for runs that must use the vendored caches. `force_regenerate=True`
+  works as before, without a warning.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the

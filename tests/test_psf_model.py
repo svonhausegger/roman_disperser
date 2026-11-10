@@ -1119,6 +1119,96 @@ class TestPSFCaching:
         npz_files = list(cache_dir.glob("*.npz"))
         assert len(npz_files) == 1
 
+    # --- No silent regeneration: the warning and ROMAN_DISPERSER_REQUIRE_PSF_CACHE.
+    # make_psf_payload is always mocked, so nothing here runs STPSF.
+
+    def test_missing_cache_warns_before_generating(
+            self, simple_payload, tmp_path, monkeypatch):
+        """A cache miss warns, naming the file, before generation starts."""
+        import warnings
+        monkeypatch.delenv("ROMAN_DISPERSER_REQUIRE_PSF_CACHE", raising=False)
+        seen_at_generation = []
+
+        def mock_make_psf_payload(**kwargs):
+            seen_at_generation.extend(
+                str(w.message) for w in caught
+                if issubclass(w.category, RuntimeWarning))
+            return simple_payload
+
+        monkeypatch.setattr(psf_model, 'make_psf_payload',
+                            mock_make_psf_payload)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='1', cache_dir=tmp_path, verbose=False)
+        assert len(seen_at_generation) == 1
+        msg = seen_at_generation[0]
+        assert "generating a new PSF grid" in msg
+        assert str(tmp_path / "psf_WFI05_") in msg
+
+    def test_invalid_cache_warns(self, simple_payload, tmp_path, monkeypatch):
+        """An unreadable cache file warns that it is invalid, then regenerates."""
+        monkeypatch.delenv("ROMAN_DISPERSER_REQUIRE_PSF_CACHE", raising=False)
+        cache_dir = tmp_path / "cache"
+        monkeypatch.setattr(psf_model, 'make_psf_payload',
+                            lambda **kwargs: simple_payload)
+        psf_model.get_or_make_psf_payload(
+            detector='WFI05', order='1', cache_dir=cache_dir, verbose=False)
+        (cache_file,) = cache_dir.glob("*.npz")
+
+        def broken_load(path, verbose=True):
+            raise ValueError("truncated file")
+
+        monkeypatch.setattr(psf_model, 'load_psf_payload', broken_load)
+        with pytest.warns(RuntimeWarning, match="is invalid") as record:
+            result = psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='1', cache_dir=cache_dir,
+                verbose=False)
+        assert result is simple_payload
+        assert any(str(cache_file) in str(w.message) and
+                   "truncated file" in str(w.message) for w in record)
+
+    @pytest.mark.parametrize("cache_state", ["missing", "invalid"])
+    def test_require_cache_env_raises_without_generating(
+            self, tmp_path, monkeypatch, cache_state):
+        """With ROMAN_DISPERSER_REQUIRE_PSF_CACHE set, no generation at all."""
+        monkeypatch.setenv("ROMAN_DISPERSER_REQUIRE_PSF_CACHE", "1")
+
+        def must_not_generate(**kwargs):
+            raise AssertionError("make_psf_payload called")
+
+        monkeypatch.setattr(psf_model, 'make_psf_payload', must_not_generate)
+        if cache_state == "invalid":
+            name = psf_model.get_cache_filename(
+                'WFI05', '1', np.arange(0.9, 2.01, 0.02),
+                {'x': np.linspace(1, 4088, 4), 'y': np.linspace(1, 4088, 4)},
+                5.0, 4)
+            (tmp_path / name).write_bytes(b"not an npz")
+
+            def broken_load(path, verbose=True):
+                raise ValueError("truncated file")
+
+            monkeypatch.setattr(psf_model, 'load_psf_payload', broken_load)
+        with pytest.raises(FileNotFoundError,
+                           match="ROMAN_DISPERSER_REQUIRE_PSF_CACHE"):
+            psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='1', cache_dir=tmp_path,
+                verbose=False)
+
+    def test_force_regenerate_does_not_warn_or_raise(
+            self, simple_payload, tmp_path, monkeypatch):
+        """force_regenerate=True is deliberate: no warning, env var ignored."""
+        import warnings
+        monkeypatch.setenv("ROMAN_DISPERSER_REQUIRE_PSF_CACHE", "1")
+        monkeypatch.setattr(psf_model, 'make_psf_payload',
+                            lambda **kwargs: simple_payload)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            result = psf_model.get_or_make_psf_payload(
+                detector='WFI05', order='1', cache_dir=tmp_path,
+                force_regenerate=True, verbose=False)
+        assert result is simple_payload
+
     @pytest.mark.slow
     @pytest.mark.stpsf
     def test_stpsf_payload_cache_roundtrip(self, tmp_path):
