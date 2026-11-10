@@ -728,6 +728,23 @@ class TestPSFIntegration:
 
     @pytest.mark.slow
     @pytest.mark.stpsf
+    @pytest.mark.parametrize('order, detector', [('1', 'WFI05'), ('0', 'WFI09')])
+    def test_overdist_cube_matches_calc_datacube(self, order, detector):
+        """Reusing the optical system across wavelengths gives calc_datacube's PSFs exactly."""
+        pytest.importorskip("stpsf")
+
+        wfi = psf_model._make_wfi(detector, order, None, False)
+        wfi.detector_position = psf_utils.sca_to_stpsf_position(1000.0, 2000.0)
+        wavelengths_m = np.array([1.0, 1.37, 1.9]) * 1e-6
+
+        reused = psf_model._overdist_cube(wfi, wavelengths_m, 3.0, 2, reuse_optics=True)
+        rebuilt = psf_model._overdist_cube(wfi, wavelengths_m, 3.0, 2, reuse_optics=False)
+
+        assert reused.shape == rebuilt.shape == (3,) + rebuilt.shape[1:]
+        np.testing.assert_array_equal(reused, rebuilt)
+
+    @pytest.mark.slow
+    @pytest.mark.stpsf
     def test_enclosed_energy_all_psfs(self):
         """Validate enclosed energy for all PSFs in grid."""
         pytest.importorskip("stpsf")
@@ -2055,6 +2072,12 @@ def fake_stpsf(monkeypatch):
     monkeypatch.setattr(psf_model, '_installed_stpsf_version',
                         lambda: psf_model.TARGET_STPSF_VERSION)
     monkeypatch.setenv('STPSF_PATH', '/fake/stpsf-data')
+    # The fake only has calc_datacube, so use that path of _overdist_cube;
+    # the optics-reuse path is checked against real STPSF in
+    # TestPSFIntegration.test_overdist_cube_matches_calc_datacube.
+    import functools
+    monkeypatch.setattr(psf_model, '_overdist_cube',
+                        functools.partial(psf_model._overdist_cube, reuse_optics=False))
     return _FakeWFI
 
 

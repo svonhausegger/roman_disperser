@@ -246,6 +246,49 @@ def _make_wfi(detector, order, stpsf_filter, add_ipc):
     return wfi
 
 
+def _overdist_cube(wfi, wavelengths_m, fov_arcsec, oversample, reuse_optics=True):
+    """OVERDIST PSFs at each wavelength for the WFI's current detector position.
+
+    Gives the same array as
+    ``wfi.calc_datacube(wavelengths_m, fov_arcsec=..., oversample=...)['OVERDIST'].data``,
+    but builds the optical system once per position instead of once per
+    wavelength. ``calc_datacube`` calls ``calc_psf`` for every wavelength, and
+    each call rebuilds the optical system: it re-reads and unzips the pupil cube
+    and the high-frequency map, which is about a third of the run time. Nothing
+    in the optical system depends on wavelength (the field-dependent Zernikes
+    are evaluated at each wavefront's own wavelength as it passes), so it can
+    be reused. Jitter, the FITS header and charge diffusion are then applied to
+    each wavelength exactly as ``calc_psf`` applies them.
+
+    ``reuse_optics=False`` falls back to ``calc_datacube``.
+    """
+    wavelengths_m = np.asarray(wavelengths_m, dtype=float)
+    if not reuse_optics:
+        cube = wfi.calc_datacube(wavelengths_m, fov_arcsec=fov_arcsec, oversample=oversample)
+        return cube['OVERDIST'].data
+
+    # A regular calc_psf at the first wavelength validates the configuration
+    # and leaves this position's optical system in wfi.optsys.
+    first = wfi.calc_psf(monochromatic=wavelengths_m[0], fov_arcsec=fov_arcsec, oversample=oversample)
+    cube = np.empty((len(wavelengths_m),) + first['OVERDIST'].data.shape)
+    cube[0] = first['OVERDIST'].data
+    osys = wfi.optsys
+
+    for i, wl in enumerate(wavelengths_m[1:], start=1):
+        # The options poppy.Instrument.calc_psf would use for this call.
+        options = wfi.options.copy()
+        options.update(monochromatic=wl, nlambda=wfi._get_default_nlambda(wfi.filter),
+                       fov_arcsec=fov_arcsec, fov_spec=f'arcsec = {fov_arcsec:f}',
+                       detector_oversample=oversample, fft_oversample=oversample)
+        wavelens, weights = wfi._get_weights(monochromatic=wl)
+        result = osys.calc_psf(wavelens, weights, normalize='first')
+        wfi._apply_jitter(result, options)
+        wfi._get_fits_header(result, options)
+        wfi._calc_psf_format_output(result, options)
+        cube[i] = result['OVERDIST'].data
+    return cube
+
+
 def _hf_map_name(detector):
     """Name of a detector's high-frequency wavefront map in the STPSF data."""
     return f"RST_WFI{int(str(detector)[-2:])}_Z210_high_frequency_map.fits"
@@ -1090,10 +1133,7 @@ def _make_psf_payload_with_progress(
         x_stpsf, y_stpsf = sca_to_stpsf_position(float(xsca), float(ysca))
         wfi.detector_position = (float(x_stpsf), float(y_stpsf))
 
-        datacube = wfi.calc_datacube(
-            wavelengths_m, fov_arcsec=fov_arcsec, oversample=oversample
-        )
-        psf_cube = datacube['OVERDIST'].data
+        psf_cube = _overdist_cube(wfi, wavelengths_m, fov_arcsec, oversample)
         psf_grid.append(psf_cube)
 
         # Update shared counter
@@ -1945,11 +1985,9 @@ def _compute_psf_grid_with_timing(
         # Calculate datacube at this position
         # CRITICAL: Use OVERDIST extension for sub-pixel accuracy + detector effects
         # Note: add_distortion is no longer needed - all WFI PSFs natively include distortion
-        datacube = wfi.calc_datacube(
-            wavelengths_m, fov_arcsec=fov_arcsec, oversample=oversample
-        )
-        # Use OVERDIST: oversampled + detector effects (distortion, diffusion)
-        psf_cube = datacube['OVERDIST'].data  # [N_wl, PSF_y, PSF_x]
+        # OVERDIST: oversampled + detector effects (distortion, diffusion).
+        # The optical system is built once per position (see _overdist_cube).
+        psf_cube = _overdist_cube(wfi, wavelengths_m, fov_arcsec, oversample)  # [N_wl, PSF_y, PSF_x]
 
         psf_grid.append(psf_cube)
 
