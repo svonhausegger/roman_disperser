@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`--force` re-renders SCAs whose FITS already exist.** `run_batch` did not
+  pass `force` to `process_pointing`, which skipped every SCA with a FITS on
+  disk, so a forced run rewrote the meta YAML but kept the old images.
+  `process_pointing` takes a `force` argument (default `False`, unchanged
+  for library callers); with it, an existing SCA FITS is deleted and
+  rendered again.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
