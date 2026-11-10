@@ -322,7 +322,8 @@ def make_batched_star_fori(disperser_fn, sens, wavelengths_jax, dlam_angstroms):
     Returns
     -------
     run : callable(n_sources, spectra, xsca, ysca, output) -> output
-        spectra: [batch_size, N_wl], xsca/ysca: [batch_size]
+        spectra: [batch_size, N_wl], xsca/ysca: [batch_size]. ``output``
+        is donated (see :func:`run_star_batch`): rebind the result.
 
     Raises
     ------
@@ -386,6 +387,10 @@ def run_star_batch(arrays, sens, wavelengths, dlam_angstroms,
         Number of valid rows (traced; does not trigger recompiles).
     spectra : [batch_size, N_wl]; xsca, ysca : [batch_size]
     output : [H, W] detector accumulator
+        Donated (``donate_argnames``): XLA updates it in place, and the
+        array passed in is deleted by the call. Use the returned array;
+        reusing the old one raises ``RuntimeError: Array has been
+        deleted``. Pass a fresh accumulator to start a new image.
     static : hashable, chunk_size : int
         Compile-time constants.
     """
@@ -409,6 +414,8 @@ def disperse_batched_stars(fori_fn, spectra, xsca, ysca, output, batch_size):
     spectra : ndarray [N, N_wl]
     xsca, ysca : ndarray [N]
     output : jnp.ndarray [4088, 4088]
+        Donated to ``fori_fn`` (see :func:`run_star_batch`): the array passed
+        in is deleted; use the returned one.
     batch_size : int
 
     Returns
@@ -467,7 +474,8 @@ def make_batched_galaxy_fori(disperser_fn, sens, wavelengths_jax,
     -------
     run : callable(n_sources, spectra, xsca, ysca, images, output) -> output
         spectra: [batch_size, N_wl], xsca/ysca: [batch_size],
-        images: [batch_size, npix, npix]
+        images: [batch_size, npix, npix]. ``output`` is donated (see
+        :func:`run_star_batch`): rebind the result.
 
     Raises
     ------
@@ -500,7 +508,8 @@ def run_galaxy_batch(arrays, sens, wavelengths, dlam_angstroms,
     """Disperse the first ``n_sources`` galaxies of a padded batch (jitted).
 
     Same contract as :func:`run_star_batch`, plus ``images``
-    [batch_size, npix, npix] at the PSF oversampling.
+    [batch_size, npix, npix] at the PSF oversampling. ``output`` is
+    donated here too: the array passed in is deleted, use the returned one.
     """
     psf_payload, optical_payload = jit_payload.merge_payloads(arrays, static)
 
@@ -533,6 +542,8 @@ def disperse_batched_galaxies(fori_fn, spectra, xsca, ysca, images, output,
     images : jnp.ndarray [N, npix, npix]
         Galaxy images (already on GPU).
     output : jnp.ndarray [4088, 4088]
+        Donated to ``fori_fn`` (see :func:`run_star_batch`): the array passed
+        in is deleted; use the returned one.
     batch_size : int
 
     Returns
@@ -623,6 +634,8 @@ def disperse_batched_sersic_galaxies(fori_fn, spectra, xsca, ysca,
     npix : int
         Oversampled image size (``galaxy_npix * oversample``).
     output : jnp.ndarray [4088, 4088]
+        Donated to ``fori_fn`` (see :func:`run_star_batch`): the array passed
+        in is deleted; use the returned one.
     batch_size : int
 
     Returns

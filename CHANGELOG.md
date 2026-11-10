@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **API change: `pipeline.run_star_batch` and `run_galaxy_batch` donate
+  their `output` accumulator** (`donate_argnames=("output",)`), so XLA
+  updates the 67 MB detector image in place instead of keeping a second
+  copy. The array passed in is deleted by the call: callers must use the
+  returned array, and reusing the old one raises
+  `RuntimeError: Array has been deleted`. This also holds for the `run`
+  functions from `make_batched_star_fori`/`make_batched_galaxy_fori` and
+  for the `output` given to `disperse_batched_stars`,
+  `disperse_batched_galaxies` and `disperse_batched_sersic_galaxies`. The
+  two warm-up loops in `build_dispersed_image.py`, which reused one
+  accumulator, now rebind it. The factory-level `disperse_star_jit`/
+  `disperse_galaxy_jit` are not donated. Peak memory on CPU drops by
+  45-185 MB; run time and output are unchanged (bit-identical).
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
