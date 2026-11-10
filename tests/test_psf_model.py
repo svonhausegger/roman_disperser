@@ -745,6 +745,17 @@ class TestPSFIntegration:
 
     @pytest.mark.slow
     @pytest.mark.stpsf
+    def test_installed_stpsf_has_current_convention(self):
+        """The STPSF used for tests builds the planes in the order caches assume."""
+        pytest.importorskip("stpsf")
+
+        wfi = psf_model._make_wfi('WFI05', '1', None, False)
+        provenance = psf_model._check_generation_provenance(wfi)
+        assert provenance['stpsf_planes'] == psf_model.WFI_PLANE_ORDER
+        assert provenance['stpsf_data_version'] == psf_model.STPSF_DATA_VERSION
+
+    @pytest.mark.slow
+    @pytest.mark.stpsf
     def test_enclosed_energy_all_psfs(self):
         """Validate enclosed energy for all PSFs in grid."""
         pytest.importorskip("stpsf")
@@ -1078,7 +1089,7 @@ class TestPSFCaching:
     def _labelled(payload):
         """The mock payload with the labels a real generation gives it."""
         return {**payload, 'stpsf_version': psf_model.TARGET_STPSF_VERSION,
-                'add_ipc': False}
+                'add_ipc': False, **_CURRENT_PROVENANCE}
 
     @staticmethod
     def _request(payload):
@@ -1268,9 +1279,23 @@ _STEM = "psf_WFI05_GRISM1_2x2x2_1.00-1.50um_fov5.0_os4"
 _ABSENT = object()
 
 
+def _provenance_fields(**override):
+    """npz fields recording the current STPSF convention, as generation does."""
+    prov = {**_CURRENT_PROVENANCE, **override}
+    return {'stpsf_source': np.array(prov['stpsf_source'], dtype='S'),
+            'stpsf_git': np.array(prov['stpsf_git'], dtype='S'),
+            'stpsf_data_version': np.array(prov['stpsf_data_version'], dtype='S'),
+            'stpsf_planes': np.array(list(prov['stpsf_planes']), dtype='S'),
+            'stpsf_position_offset': np.array(prov['stpsf_position_offset'])}
+
+
 def _fake_cache(directory, name, version=_ABSENT, add_ipc=_ABSENT, marker=1.0,
-                **extra):
-    """Write a tiny cache; ``marker`` fills psf_grid to tell files apart."""
+                provenance=True, **extra):
+    """Write a tiny cache; ``marker`` fills psf_grid to tell files apart.
+
+    A file with a version also records the current STPSF convention unless
+    ``provenance=False``.
+    """
     fields = dict(
         psf_grid=np.full((2, 2, 2, 8, 8), marker, dtype=np.float32),
         wavelengths=_WL, spatial_x=_GRID['x'], spatial_y=_GRID['y'],
@@ -1282,6 +1307,8 @@ def _fake_cache(directory, name, version=_ABSENT, add_ipc=_ABSENT, marker=1.0,
         fields['stpsf_version'] = np.array(version, dtype='S')
         fields['stpsf_hf_map'] = np.array(
             "RST_WFI5_Z210_high_frequency_map.fits", dtype='S')
+        if provenance:
+            fields.update(_provenance_fields())
     if add_ipc is not _ABSENT:
         fields['add_ipc'] = np.array(add_ipc)
     fields.update(extra)
@@ -1310,7 +1337,7 @@ def _fake_generation(**kwargs):
             'spatial_x': kwargs['spatial_grid']['x'],
             'spatial_y': kwargs['spatial_grid']['y'],
             'oversample': 4, 'pixel_scale': 0.11, 'stpsf_version': '2.3.0',
-            'add_ipc': kwargs['add_ipc']}
+            'add_ipc': kwargs['add_ipc'], **_CURRENT_PROVENANCE}
 
 
 def _marker(payload):
@@ -2045,6 +2072,15 @@ def _lookup_grid_generate(directory, grid):
         cache_dir=directory, verbose=False, allow_generate=True)
 
 
+_CURRENT_PROVENANCE = {
+    'stpsf_source': '/fake/stpsf',
+    'stpsf_git': 'v2.3.0-fake',
+    'stpsf_data_version': psf_model.STPSF_DATA_VERSION,
+    'stpsf_planes': psf_model.WFI_PLANE_ORDER,
+    'stpsf_position_offset': psf_model.PSF_POSITION_OFFSET,
+}
+
+
 class _FakeWFI:
     instances = []
 
@@ -2078,7 +2114,92 @@ def fake_stpsf(monkeypatch):
     import functools
     monkeypatch.setattr(psf_model, '_overdist_cube',
                         functools.partial(psf_model._overdist_cube, reuse_optics=False))
+    # The fake has no optical system; report the current convention.
+    monkeypatch.setattr(psf_model, '_stpsf_provenance',
+                        lambda wfi: dict(_CURRENT_PROVENANCE))
     return _FakeWFI
+
+
+# Plane order of plain STPSF 2.3.0: the inversion before the aberrations.
+_OLD_PLANES = ("FITSOpticalElement", "CoordinateInversion",
+               "FieldDependentAberration", "Detector")
+
+
+class TestProvenance:
+    _NAME = f"{_STEM}_stpsf2.3.0.npz"
+
+    def test_generation_records_provenance(self, fake_stpsf, tmp_path):
+        payload = psf_model.make_psf_payload(
+            wavelengths=_WL, spatial_grid=_GRID, verbose=False)
+        path = tmp_path / self._NAME
+        psf_model.save_psf_payload(payload, path, verbose=False)
+        loaded = psf_model.load_psf_payload(path, verbose=False)
+        for key, value in _CURRENT_PROVENANCE.items():
+            assert loaded[key] == value
+
+    def test_progress_generation_records_provenance(self, fake_stpsf):
+        payload = psf_model._make_psf_payload_with_progress(
+            'WFI05', '1', _WL, _GRID, 5.0, 4)
+        assert payload['stpsf_planes'] == psf_model.WFI_PLANE_ORDER
+
+    @pytest.mark.parametrize("override, match", [
+        ({'stpsf_planes': _OLD_PLANES}, "CoordinateInversion > FieldDependent"),
+        ({'stpsf_data_version': '2.2.0'}, "stpsf-data 2.2.0"),
+    ])
+    def test_generation_refuses_other_convention(self, fake_stpsf, monkeypatch,
+                                                 override, match):
+        monkeypatch.setattr(psf_model, '_stpsf_provenance',
+                            lambda wfi: {**_CURRENT_PROVENANCE, **override})
+        with pytest.raises(RuntimeError, match=match):
+            psf_model.make_psf_payload(wavelengths=_WL, spatial_grid=_GRID,
+                                       verbose=False)
+        with pytest.raises(RuntimeError, match=match):
+            psf_model._make_psf_payload_with_progress('WFI05', '1', _WL, _GRID, 5.0, 4)
+
+    @pytest.mark.parametrize("override, match", [
+        ({'stpsf_planes': _OLD_PLANES}, "pupil orientation convention"),
+        ({'stpsf_data_version': '2.2.0'}, "stpsf-data 2.2.0"),
+        ({'stpsf_position_offset': 0}, "offset of 0 px"),
+    ])
+    def test_load_refuses_other_convention(self, tmp_path, no_stpsf, override, match):
+        path = _fake_cache(tmp_path, self._NAME, "2.3.0", add_ipc=False,
+                           provenance=False, **_provenance_fields(**override))
+        with pytest.raises(psf_model.PSFCacheProvenanceError, match=match):
+            psf_model.load_psf_payload(path, verbose=False)
+        with pytest.raises(psf_model.PSFCacheNotFoundError, match=match):
+            _lookup(tmp_path)
+
+    def test_unrecorded_convention_warns_on_load_and_fails_lookup(self, tmp_path,
+                                                                  no_stpsf):
+        """A cache from before provenance was recorded: plain STPSF 2.3.0 or not."""
+        path = _fake_cache(tmp_path, self._NAME, "2.3.0", add_ipc=False,
+                           provenance=False)
+        with pytest.warns(psf_model.PSFCacheVersionWarning,
+                          match="does not record its optical plane order"):
+            psf_model.load_psf_payload(path, verbose=False)
+        with pytest.raises(psf_model.PSFCacheNotFoundError,
+                           match="does not record its optical plane order"):
+            _lookup(tmp_path)
+
+    def test_current_convention_loads_silently(self, tmp_path, no_stpsf):
+        _fake_cache(tmp_path, self._NAME, "2.3.0", add_ipc=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            payload = _lookup(tmp_path)
+        assert payload['stpsf_git'] == _CURRENT_PROVENANCE['stpsf_git']
+
+    def test_resave_keeps_provenance(self, tmp_path, no_stpsf):
+        path = _fake_cache(tmp_path, self._NAME, "2.3.0", add_ipc=False)
+        payload = psf_model.load_psf_payload(path, verbose=False)
+        out = tmp_path / "copy" / self._NAME
+        psf_model.save_psf_payload(payload, out, verbose=False)
+        with np.load(out) as data:
+            assert psf_model._provenance_from_npz(data) == _CURRENT_PROVENANCE
+
+    def test_gaussian_stand_in_needs_no_provenance(self, tmp_path, no_stpsf):
+        _fake_cache(tmp_path, f"{_STEM}.npz", psf_source=np.array("gaussian", dtype="S"))
+        with pytest.warns(UserWarning, match="gaussian"):
+            _lookup(tmp_path)
 
 
 class TestGeneration:
