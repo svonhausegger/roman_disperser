@@ -69,10 +69,29 @@ def test_ops(bdi):
     ([{"column": "nope", "op": "gt", "value": 0}], "not in catalog"),
     ([{"column": "F158", "op": "gt", "value": 0, "typs": ["SER"]}], "unknown keys"),
     ([{"column": "F158", "op": "between", "value": [1, 2, 3]}], "between"),
+    # types: lower case or a typo matched no rows (a silent no-op cut), and a
+    # bare string is not a list
+    ([{"column": "F158", "op": "gt", "value": 0, "types": ["ser"]}], "'types'"),
+    ([{"column": "F158", "op": "gt", "value": 0, "types": ["SER", "GAL"]}], "'types'"),
+    ([{"column": "F158", "op": "gt", "value": 0, "types": "SER"}], "'types'"),
 ])
 def test_bad_rules_raise(bdi, cuts, match):
     with pytest.raises(ValueError, match=match):
         bdi.apply_source_cuts(_meta(), cuts, log=_log)
+
+
+@pytest.mark.parametrize("types", [["PSF"], ["SER"], ["SER", "PSF"], []])
+def test_valid_types_accepted(bdi, types):
+    """Every list drawn from PSF/SER passes; [] means all types, as before."""
+    bdi.validate_source_cuts([{"column": "F158", "op": "gt", "value": 0,
+                               "types": types}])
+
+
+def test_bad_types_rejected_without_catalog(bdi):
+    """The check does not need the catalog columns: validate_source_cuts alone."""
+    with pytest.raises(ValueError, match="'types' must be a list"):
+        bdi.validate_source_cuts([{"column": "F158", "op": "mag_le",
+                                   "value": 27.0, "types": ["Ser"]}])
 
 
 def test_describe(bdi):

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Source-cut `types` are validated.** `types`, if given, must be a list
+  drawn from `["PSF", "SER"]`; otherwise `validate_source_cuts` raises a
+  `ValueError`. A lower-case or misspelled type matched no rows, so the cut
+  silently did nothing ("removes 0"). Cuts without `types` are unchanged.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
