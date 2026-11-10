@@ -731,3 +731,71 @@ class TestDepositStackNativeSizes:
         atol = 1e-5 * float(np.abs(want).max())
         np.testing.assert_allclose(np.asarray(got, dtype=np.float64), want,
                                    rtol=1e-5, atol=atol)
+
+
+class TestDepositChunkPadding:
+    """Wavelength chunking in deposit_stack_native: no flux lost or added.
+
+    The deposit scans the N_wl samples in chunks and pads the last one with
+    zero-flux samples. Since the chunk length is ceil(N_wl / n_chunks), the
+    pad is at most n_chunks - 1 samples (production N_wl = 5501 at
+    chunk_size 2000: 3 x 1834, 1 padded sample instead of 499). The output
+    must not depend on the chunking at all.
+
+    All inputs are small dyadic numbers (integer stamps and flux, wavelength
+    weights t in {0, 1/4, 1/2, 3/4, 1}, positions in eighths), so every
+    partial sum is exact in float32 whatever the order of the additions.
+    The comparisons are therefore exact on any backend, including GPU
+    scatter-add, and agree exactly with the float64 per-subpixel reference.
+    A dropped, duplicated or non-zero padded sample changes the result.
+    """
+
+    SHAPE = (64, 64)
+
+    @staticmethod
+    def _inputs(n_wl):
+        rng = np.random.default_rng(n_wl)
+        stack = jnp.array(rng.integers(0, 4, (3, 10, 11)), dtype=jnp.float32)
+        grid_wl = jnp.array([1.0, 1.5, 2.0], dtype=jnp.float32)
+        k = np.arange(n_wl)
+        wl_cycle = np.array([1.0, 1.125, 1.25, 1.5, 1.75, 1.875, 2.0])
+        wavelengths = jnp.array(wl_cycle[k % 7], dtype=jnp.float32)
+        flux = jnp.array(rng.integers(1, 3, n_wl), dtype=jnp.float32)
+        x_disp = jnp.array(20.0 + k % 24 + (k % 8) / 8.0, dtype=jnp.float32)
+        y_disp = jnp.array(30.0 + (k % 5) + (k % 3) / 8.0, dtype=jnp.float32)
+        return stack, grid_wl, wavelengths, flux, x_disp, y_disp
+
+    @pytest.mark.parametrize("n_wl,chunk_size", [
+        (5501, 2000),   # production grid: 3 x 1834 (was 3 x 2000)
+        (17, 5),        # 4 x 5, 3 padded
+        (18, 4),        # 5 x 4, 2 padded
+        (7, 3),         # 3 x 3, 2 padded
+    ])
+    def test_bit_identical_across_chunkings(self, n_wl, chunk_size):
+        args = self._inputs(n_wl)
+        want = _reference_deposit_f64(*args, self.SHAPE, 4)
+        assert want.sum() > 0
+        for cs in sorted({1, 2, chunk_size, n_wl - 1, n_wl, 3 * n_wl}):
+            got = star_disperser.deposit_stack_native(
+                *args, jnp.zeros(self.SHAPE, jnp.float32),
+                oversample=4, chunk_size=cs)
+            # chunk_size >= n_wl is one unpadded chunk, chunk_size 1 one
+            # sample per chunk: every chunking must give the same pixels.
+            np.testing.assert_array_equal(
+                np.asarray(got), want.astype(np.float32),
+                err_msg=f"n_wl={n_wl}, chunk_size={cs}")
+
+    def test_production_grid_pads_one_sample(self):
+        """N_wl = 5501, chunk_size 2000: a 3-step scan over 1834 samples."""
+        args = self._inputs(5501)
+        jaxpr = jax.make_jaxpr(
+            lambda *a: star_disperser.deposit_stack_native(
+                *a, oversample=4, chunk_size=2000)
+        )(*args, jnp.zeros(self.SHAPE, jnp.float32))
+        scans = [e for e in jaxpr.jaxpr.eqns if e.primitive.name == "scan"]
+        assert len(scans) == 1
+        assert scans[0].params["length"] == 3
+        slices = {e.params["slice_sizes"]
+                  for e in scans[0].params["jaxpr"].jaxpr.eqns
+                  if e.primitive.name == "dynamic_slice"}
+        assert slices == {(1834,)}
