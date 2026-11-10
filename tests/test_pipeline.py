@@ -15,6 +15,7 @@ from astropy.io import fits
 from roman_disperser.pipeline import (
     get_code_version,
     get_git_sha,
+    load_sensitivities,
     make_sca_keys,
     write_fits,
 )
@@ -162,3 +163,76 @@ class TestDisperseBatchedSersicGalaxies:
             np.testing.assert_allclose(img_new, img_old, rtol=1e-4,
                                        atol=1e-6 * img_old.max())
             np.testing.assert_allclose(img_new.sum(axis=(1, 2)), 1.0, rtol=1e-5)
+
+
+def _write_sensitivity_dir(tmp_path, wl_angstrom, sens, sca=5, order="1"):
+    """A one-table sensitivity directory: sensitivity_map.yaml + one FITS."""
+    fname = f"sens_SCA{sca}_order{order}.fits"
+    cols = [
+        fits.Column(name="WAVELENGTH", format="D",
+                    array=np.asarray(wl_angstrom, dtype=float)),
+        fits.Column(name="SENSITIVITY", format="D",
+                    array=np.asarray(sens, dtype=float)),
+    ]
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(cols)]
+                 ).writeto(tmp_path / fname)
+    (tmp_path / "sensitivity_map.yaml").write_text(
+        f"SCA{sca}:\n  '{order}': {fname}\n")
+    return fname
+
+
+class TestLoadSensitivities:
+    """The table checks in load_sensitivities (finite, increasing, covering).
+
+    Before them, np.interp quietly extended a short table flat beyond its
+    end and returned garbage for a descending or NaN table.
+    """
+
+    WL_A = np.linspace(8000.0, 22000.0, 15)      # 0.8-2.2 um, in Angstrom
+    SENS = np.linspace(1.0, 2.0, 15)
+    GRID = np.arange(0.9, 2.01, 0.02)            # microns
+
+    def test_valid_table_matches_np_interp(self, tmp_path):
+        _write_sensitivity_dir(tmp_path, self.WL_A, self.SENS)
+        out = load_sensitivities(tmp_path, 5, self.GRID, ["1"])
+        expected = np.interp(self.GRID, self.WL_A / 1e4, self.SENS)
+        np.testing.assert_array_equal(
+            np.asarray(out["1"]), expected.astype(np.float32))
+
+    def test_grid_equal_to_table_range_is_accepted(self, tmp_path):
+        """Coverage is inclusive: a grid on exactly the table ends passes."""
+        _write_sensitivity_dir(tmp_path, self.WL_A, self.SENS)
+        grid = np.linspace(0.8, 2.2, 8)
+        out = load_sensitivities(tmp_path, 5, grid, ["1"])
+        assert np.asarray(out["1"])[0] == pytest.approx(1.0)
+        assert np.asarray(out["1"])[-1] == pytest.approx(2.0)
+
+    @pytest.mark.parametrize("grid", [
+        np.arange(0.3, 2.01, 0.02),    # starts below the table
+        np.arange(0.9, 2.51, 0.02),    # ends above the table
+    ], ids=["below", "above"])
+    def test_grid_outside_table_raises(self, tmp_path, grid):
+        fname = _write_sensitivity_dir(tmp_path, self.WL_A, self.SENS)
+        with pytest.raises(ValueError, match=re.escape(fname)
+                           + r".*covers 0\.8000-2\.2000 um"):
+            load_sensitivities(tmp_path, 5, grid, ["1"])
+
+    def test_descending_wavelength_raises(self, tmp_path):
+        _write_sensitivity_dir(tmp_path, self.WL_A[::-1], self.SENS[::-1])
+        with pytest.raises(ValueError, match="not strictly increasing"):
+            load_sensitivities(tmp_path, 5, self.GRID, ["1"])
+
+    def test_repeated_wavelength_raises(self, tmp_path):
+        wl = self.WL_A.copy()
+        wl[5] = wl[4]
+        _write_sensitivity_dir(tmp_path, wl, self.SENS)
+        with pytest.raises(ValueError, match="not strictly increasing"):
+            load_sensitivities(tmp_path, 5, self.GRID, ["1"])
+
+    @pytest.mark.parametrize("column", ["wavelength", "sensitivity"])
+    def test_non_finite_values_raise(self, tmp_path, column):
+        wl, sens = self.WL_A.copy(), self.SENS.copy()
+        (wl if column == "wavelength" else sens)[7] = np.nan
+        _write_sensitivity_dir(tmp_path, wl, sens)
+        with pytest.raises(ValueError, match="non-finite"):
+            load_sensitivities(tmp_path, 5, self.GRID, ["1"])

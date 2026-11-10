@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Sensitivity tables are checked before interpolating.**
+  `pipeline.load_sensitivities` now raises a `ValueError` naming the file if a
+  table has non-finite values, wavelengths that are not strictly increasing,
+  or does not cover the requested wavelength grid (before, `np.interp`
+  extended a short table flat beyond its end). The interpolation uses
+  `left=right=0`. Stricter: a table narrower than the grid now stops the run.
+  The shipped grism and prism tables pass, and the curves are bit-identical.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
