@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Repeated pointings are refused.** Two pointing-table rows with the same
+  (PLAN, PASS, SEGMENT, OBSERVATION, VISIT, EXPOSURE) share an output
+  directory and an RNG key, so the second silently overwrote the first.
+  `run_batch` now raises a `ValueError` listing the repeated tuples, before
+  any rendering. Only rows of the active element count; tables without
+  repeats run as before.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
