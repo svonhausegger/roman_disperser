@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Catalog morphology is validated.** `validate_catalog` now rejects
+  galaxies with a NaN or infinite `n`, `half_light_radius`, `pa` or `ba`
+  (a NaN swath in MODEL), or with `n <= 0`, `ba <= 0` or
+  `half_light_radius < 0`, and any negative `sed_index` (NumPy indexing
+  wrapped it around to another star template). Stars are not checked for
+  morphology, which they don't use.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
