@@ -51,6 +51,7 @@ import numpy as np
 import jax.numpy as jnp
 import jax
 
+from . import psf_utils
 from .psf_utils import sca_to_stpsf_position, stpsf_to_sca_position
 
 # Default order -> STPSF filter map. The grism is the package's default
@@ -66,6 +67,26 @@ TARGET_STPSF_VERSION = "2.3.0"
 # First STPSF whose OVERDIST extension has IPC on by default. Fixed history,
 # independent of the target: a file stamped older than this has no IPC in it.
 IPC_FIRST_STPSF_VERSION = "2.3.0"
+
+# The convention a cache must have been made under, beyond its STPSF version.
+# The version label cannot tell these apart: STPSF develop since #196 (and
+# svonhausegger/stpsf svh/newrd since 465e8c2) reports the same 2.3.0 as the
+# release, but inverts the WFI pupil after the field-dependent aberrations
+# instead of before them, and the PSFs differ.
+# - Optical planes, by poppy class, in the order STPSF builds them.
+WFI_PLANE_ORDER = ("FITSOpticalElement", "FieldDependentAberration",
+                   "CoordinateInversion", "Detector")
+# - The stpsf-data package (its version.txt).
+STPSF_DATA_VERSION = "2.3.0"
+# - The pixel offset psf_utils adds between SCA and STPSF positions; it decides
+#   where on the detector each node was computed.
+PSF_POSITION_OFFSET = psf_utils._SCA_TO_STPSF_OFFSET
+
+
+class PSFCacheProvenanceError(ValueError):
+    """A PSF cache records a plane order, data version or position frame other
+    than the current one."""
+
 
 _REGENERATE_ADVICE = "Regenerate with scripts/generate_psf_caches.py."
 
@@ -310,6 +331,102 @@ def _use_detector_hf_map(wfi, detector):
                                f"{detector}, not {_hf_map_name(detector)}.")
 
 
+def _stpsf_git_describe(source_dir):
+    """``git describe`` of the STPSF clone it is imported from, or None.
+
+    None also for an installed package that merely sits inside some other git
+    repository (a venv in a project tree): the clone's root must be the
+    package's parent directory.
+    """
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(source_dir), *args],
+                              capture_output=True, text=True, timeout=10,
+                              check=True).stdout.strip()
+    try:
+        if Path(git("rev-parse", "--show-toplevel")).resolve() != source_dir.parent:
+            return None
+        return git("describe", "--always", "--dirty", "--tags") or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _stpsf_provenance(wfi):
+    """What a cache made with this WFI records about its STPSF set-up.
+
+    Builds the optical system once (about 0.3 s) to read its plane order.
+    """
+    import stpsf
+    import stpsf.utils
+
+    source_dir = Path(stpsf.__file__).resolve().parent
+    try:
+        version_file = Path(stpsf.utils.get_stpsf_data_path()) / "version.txt"
+        data_version = version_file.read_text().strip() or None
+    except OSError:
+        data_version = None
+    osys = wfi.get_optical_system()
+    return {
+        'stpsf_source': str(source_dir),
+        'stpsf_git': _stpsf_git_describe(source_dir),
+        'stpsf_data_version': data_version,
+        'stpsf_planes': tuple(type(plane).__name__ for plane in osys.planes),
+        'stpsf_position_offset': PSF_POSITION_OFFSET,
+    }
+
+
+def _provenance_conflicts(provenance):
+    """How recorded provenance differs from the current convention.
+
+    Compares only the fields that are recorded; `_provenance_missing` reports
+    the others.
+    """
+    problems = []
+    planes = provenance.get('stpsf_planes')
+    if planes is not None and tuple(planes) != WFI_PLANE_ORDER:
+        problems.append(f"its optical planes are {' > '.join(planes)}, not "
+                        f"{' > '.join(WFI_PLANE_ORDER)} (a different pupil "
+                        f"orientation convention)")
+    data_version = provenance.get('stpsf_data_version')
+    if data_version is not None and data_version != STPSF_DATA_VERSION:
+        problems.append(f"it was made with stpsf-data {data_version}, not "
+                        f"{STPSF_DATA_VERSION}")
+    offset = provenance.get('stpsf_position_offset')
+    if offset is not None and offset != PSF_POSITION_OFFSET:
+        problems.append(f"its nodes were placed with an SCA-to-STPSF offset of "
+                        f"{offset} px, not {PSF_POSITION_OFFSET} px")
+    return problems
+
+
+def _provenance_missing(provenance):
+    """A clause naming the convention fields a cache does not record, if any."""
+    names = {'stpsf_planes': 'optical plane order',
+             'stpsf_data_version': 'stpsf-data version',
+             'stpsf_position_offset': 'SCA-to-STPSF position offset'}
+    missing = [label for key, label in names.items() if provenance.get(key) is None]
+    if not missing:
+        return []
+    return [f"it does not record its {', '.join(missing)}, so it may have been "
+            f"made under another convention (plain STPSF 2.3.0 inverts the "
+            f"pupil before the aberrations)"]
+
+
+def _check_generation_provenance(wfi):
+    """Provenance for a new cache; raise if STPSF is not set up as caches assume."""
+    provenance = _stpsf_provenance(wfi)
+    problems = _provenance_conflicts(provenance) + _provenance_missing(provenance)
+    if problems:
+        raise RuntimeError(
+            f"Refusing to generate a PSF cache with the STPSF in "
+            f"{provenance['stpsf_source']} "
+            f"({provenance['stpsf_git'] or 'not a git tree'}), since the cache "
+            f"would not match the current convention: {'; '.join(problems)}. "
+            f"Use an STPSF that inverts the WFI pupil after the aberrations "
+            f"(svonhausegger/stpsf svh/newrd) with stpsf-data {STPSF_DATA_VERSION}.")
+    return provenance
+
+
 def resolve_stpsf_filter(order, stpsf_filter=None):
     """Return the STPSF filter name to use for a spectral order.
 
@@ -485,7 +602,24 @@ def _header_from_npz(data):
                    if 'stpsf_hf_map' in data else None),
         'detector': (_decode_label(data['detector'])
                      if 'detector' in data else None),
+        **_provenance_from_npz(data),
     }
+
+
+_PROVENANCE_KEYS = ('stpsf_source', 'stpsf_git', 'stpsf_data_version',
+                    'stpsf_planes', 'stpsf_position_offset')
+
+
+def _provenance_from_npz(data):
+    """STPSF provenance stored in an open cache; None where it is absent."""
+    out = {}
+    for key in ('stpsf_source', 'stpsf_git', 'stpsf_data_version'):
+        out[key] = _decode_label(data[key]) if key in data else None
+    out['stpsf_planes'] = (tuple(_decode_label(v) for v in data['stpsf_planes'])
+                           if 'stpsf_planes' in data else None)
+    out['stpsf_position_offset'] = (int(data['stpsf_position_offset'])
+                                    if 'stpsf_position_offset' in data else None)
+    return out
 
 
 def _read_cache_header(path):
@@ -572,6 +706,8 @@ def _exact_file_problems(path, request):
     elif config['add_ipc'] != name_ipc:
         problems.append(f"its filename says IPC {'on' if name_ipc else 'off'} but "
                         f"its metadata says add_ipc={config['add_ipc']}")
+    if config['psf_source'] == 'stpsf':
+        problems += _provenance_conflicts(config) + _provenance_missing(config)
     return problems
 
 
@@ -771,6 +907,8 @@ def _cache_issues(path, header):
                       f"its metadata says add_ipc={header['add_ipc']} (the "
                       f"metadata is used)")
 
+    issues += _provenance_missing(header)
+
     installed = _installed_stpsf_version()
     if (parsed is not None and installed is not None
             and _parse_version(installed) != parsed):
@@ -861,6 +999,9 @@ def save_psf_payload(payload, filepath, verbose=True):
     - PSF grid data (as float32 for space efficiency)
     - All grid parameters (wavelengths, spatial grids, fov, oversample)
     - Metadata (detector, order, STPSF version, add_ipc, generation timestamp)
+    - STPSF provenance, when the payload has it: the STPSF source directory and
+      its ``git describe``, the stpsf-data version, the optical plane order and
+      the SCA-to-STPSF position offset (see ``WFI_PLANE_ORDER``)
 
     See Also
     --------
@@ -909,6 +1050,13 @@ def save_psf_payload(payload, filepath, verbose=True):
         save_dict['stpsf_hf_map'] = np.array(payload['stpsf_hf_map'], dtype='S')
     if payload.get('psf_source', 'stpsf') != 'stpsf':
         save_dict['psf_source'] = np.array(payload['psf_source'], dtype='S')
+    for key in ('stpsf_source', 'stpsf_git', 'stpsf_data_version'):
+        if payload.get(key) is not None:
+            save_dict[key] = np.array(payload[key], dtype='S')
+    if payload.get('stpsf_planes') is not None:
+        save_dict['stpsf_planes'] = np.array(list(payload['stpsf_planes']), dtype='S')
+    if payload.get('stpsf_position_offset') is not None:
+        save_dict['stpsf_position_offset'] = np.array(int(payload['stpsf_position_offset']))
 
     # Save timing info if available
     if 'timing' in payload:
@@ -951,13 +1099,20 @@ def load_psf_payload(filepath, verbose=True):
         If cache file does not exist
     ValueError
         If cache file is corrupted or incompatible
+    PSFCacheProvenanceError
+        If the file records an optical plane order, stpsf-data version or
+        position offset other than ``WFI_PLANE_ORDER``, ``STPSF_DATA_VERSION``
+        and ``PSF_POSITION_OFFSET`` (a ``ValueError``)
 
     Notes
     -----
     Gives one `PSFCacheVersionWarning`, which combines every problem found, if
     the file is older than ``TARGET_STPSF_VERSION``, has no version, has filename
     and metadata that disagree, has version >= 2.3.0 and no add_ipc metadata, or
-    differs from the installed STPSF. The same message is shown once per process,
+    differs from the installed STPSF, or (for an STPSF cache) does not record
+    its plane order, data version and position offset. Exact-file lookups
+    (`get_or_make_psf_payload`, `find_psf_cache_file`) refuse such a file
+    instead. The same message is shown once per process,
     however often the file is reloaded.
 
     See Also
@@ -980,6 +1135,12 @@ def load_psf_payload(filepath, verbose=True):
                 raise ValueError(f"Cache file missing required field: {field}")
 
         header = _header_from_npz(data)
+        if header['psf_source'] == 'stpsf':
+            conflicts = _provenance_conflicts(header)
+            if conflicts:
+                raise PSFCacheProvenanceError(
+                    f"PSF cache {filepath}: {'; '.join(conflicts)}. "
+                    f"{_REGENERATE_ADVICE}")
         _warn_on_cache(filepath, header)
         _, name_version, name_ipc = _parse_cache_filename(filepath.name)
         version = header['version'] or name_version
@@ -1015,6 +1176,7 @@ def load_psf_payload(filepath, verbose=True):
             'add_ipc': add_ipc,
             'psf_source': header['psf_source'],
             'stpsf_hf_map': header['hf_map'],
+            **{key: header[key] for key in _PROVENANCE_KEYS},
         }
 
         # Optional timing info
@@ -1119,6 +1281,7 @@ def _make_psf_payload_with_progress(
     warnings.filterwarnings('ignore', message='.*outside the range.*')
 
     wfi = _make_wfi(detector, order, stpsf_filter, add_ipc)
+    provenance = _check_generation_provenance(wfi)
 
     x_grid = np.asarray(spatial_grid['x'])
     y_grid = np.asarray(spatial_grid['y'])
@@ -1153,6 +1316,7 @@ def _make_psf_payload_with_progress(
         'stpsf_version': stpsf_version,
         'add_ipc': bool(add_ipc),
         'stpsf_hf_map': _hf_map_name(detector),
+        **provenance,
         'wavelengths': jnp.array(wavelengths, dtype=jnp.float32),
         'wl_grid': jnp.array(wavelengths, dtype=jnp.float32),
         'spatial_x': jnp.array(x_grid, dtype=jnp.float32),
@@ -1860,7 +2024,7 @@ def make_psf_payload(
         print(f"  FOV: {fov_arcsec:.1f} arcsec, Oversample: {oversample}×")
         print(f"  This may take 5-6 minutes for default grid...")
 
-    psf_grid, timing = _compute_psf_grid_with_timing(
+    psf_grid, timing, provenance = _compute_psf_grid_with_timing(
         detector, order, wavelengths, spatial_grid, fov_arcsec, oversample,
         verbose, stpsf_filter=stpsf_filter, add_ipc=add_ipc,
     )
@@ -1873,6 +2037,7 @@ def make_psf_payload(
         'stpsf_version': stpsf_version,
         'add_ipc': bool(add_ipc),
         'stpsf_hf_map': _hf_map_name(detector),
+        **provenance,
         'wavelengths': jnp.array(wavelengths, dtype=jnp.float32),
         'wl_grid': jnp.array(wavelengths, dtype=jnp.float32),  # Alias for consistency with optical model
         'spatial_x': jnp.array(spatial_grid['x'], dtype=jnp.float32),
@@ -1920,8 +2085,6 @@ def _compute_psf_grid_with_timing(
         PSF field of view in arcseconds
     oversample : int
         Oversampling factor
-    use_fast : bool
-        Use calc_datacube_fast() method
     verbose : bool
         Print progress information
     add_ipc : bool
@@ -1933,6 +2096,8 @@ def _compute_psf_grid_with_timing(
         Shape: [N_y, N_x, N_wl, PSF_y, PSF_x]
     timing : dict
         {'total_time': float, 'per_psf_time': float, 'n_psfs': int}
+    provenance : dict
+        The STPSF set-up the grid was made with (see `_stpsf_provenance`)
     """
     import logging
 
@@ -1945,6 +2110,7 @@ def _compute_psf_grid_with_timing(
     start_time = time.time()
 
     wfi = _make_wfi(detector, order, stpsf_filter, add_ipc)
+    provenance = _check_generation_provenance(wfi)
 
     x_grid = spatial_grid['x']
     y_grid = spatial_grid['y']
@@ -2013,7 +2179,7 @@ def _compute_psf_grid_with_timing(
         print(f"  Time per PSF: {timing['per_psf_time']:.2f} seconds")
         print(f"  Total PSFs calculated: {n_psfs}")
 
-    return psf_grid, timing
+    return psf_grid, timing, provenance
 
 
 # ============================================================================
