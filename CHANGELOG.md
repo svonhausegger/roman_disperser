@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Unknown batch-config keys are an error.** A misspelled key (say
+  `psf_cache_directory`) used to fall back to the default silently.
+  `run_batch` now raises a `ValueError` naming the unknown keys and listing
+  the known ones. The deprecated `batch_size` is still accepted. New config
+  keys must be added to the list in `run_batch`.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
