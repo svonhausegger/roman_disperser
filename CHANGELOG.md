@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The config-file `cache_dir` takes effect.** `run_batch` and `run_warmup`
+  only set `JAX_COMPILATION_CACHE_DIR`, which JAX had already read at import,
+  so compiled programs kept going to the default directory. They now also
+  update `jax_compilation_cache_dir` and reset the cache. `--cache-dir` on
+  the command line still wins. Matters on GPU, where compiles are slow.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
