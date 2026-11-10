@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`wrap_with_romanisim.py` re-wraps stale L2 files.** An existing L2 is
+  skipped only if it is at least as new as its disperser FITS; otherwise it
+  is re-made. The old L2 is removed only right before romanisim is launched,
+  so a `--dry-run` or an input with a header or bandpass error never deletes
+  it.
+
 ## [0.16.0] - 2026-10-27
 
 **Results change: pixels differ from v0.15.x runs** (see *Changed*), so the
