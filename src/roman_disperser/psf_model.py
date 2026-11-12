@@ -62,17 +62,18 @@ GRISM_FILTERS = {'0': 'GRISM0', '1': 'GRISM1'}
 
 # The STPSF version PSF caches are made with. Generation refuses anything
 # older, and lookups prefer the file carrying this version in its name.
-TARGET_STPSF_VERSION = "2.3.0"
+TARGET_STPSF_VERSION = "2.3.1"
 
 # First STPSF whose OVERDIST extension has IPC on by default. Fixed history,
 # independent of the target: a file stamped older than this has no IPC in it.
 IPC_FIRST_STPSF_VERSION = "2.3.0"
 
 # The convention a cache must have been made under, beyond its STPSF version.
-# The version label cannot tell these apart: STPSF develop since #196 (and
-# svonhausegger/stpsf svh/newrd since 465e8c2) reports the same 2.3.0 as the
-# release, but inverts the WFI pupil after the field-dependent aberrations
-# instead of before them, and the PSFs differ.
+# The version label alone is not enough: STPSF 2.3.1 (#196; also
+# svonhausegger/stpsf svh/newrd since 465e8c2) inverts the WFI pupil after the
+# field-dependent aberrations instead of before them, as 2.3.0 did, and the
+# PSFs differ; a development checkout or an editable install can report any
+# version, so the plane order is checked directly.
 # - Optical planes, by poppy class, in the order STPSF builds them.
 WFI_PLANE_ORDER = ("FITSOpticalElement", "FieldDependentAberration",
                    "CoordinateInversion", "Detector")
@@ -423,7 +424,8 @@ def _check_generation_provenance(wfi):
             f"({provenance['stpsf_git'] or 'not a git tree'}), since the cache "
             f"would not match the current convention: {'; '.join(problems)}. "
             f"Use an STPSF that inverts the WFI pupil after the aberrations "
-            f"(svonhausegger/stpsf svh/newrd) with stpsf-data {STPSF_DATA_VERSION}.")
+            f"(STPSF >= {TARGET_STPSF_VERSION}, or svonhausegger/stpsf svh/newrd) "
+            f"with stpsf-data {STPSF_DATA_VERSION}.")
     return provenance
 
 
@@ -501,7 +503,7 @@ def get_cache_filename(
     >>> wavelengths = np.arange(0.9, 2.01, 0.02)  # microns
     >>> spatial_grid = {'x': np.linspace(1, 4088, 4), 'y': np.linspace(1, 4088, 4)}
     >>> get_cache_filename('WFI05', '1', wavelengths, spatial_grid, 5.0, 4)
-    'psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz'
+    'psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.1.npz'
     """
     stem = _cache_stem(detector, order, wavelengths, spatial_grid, fov_arcsec,
                        oversample, stpsf_filter)

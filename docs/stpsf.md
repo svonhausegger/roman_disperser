@@ -3,7 +3,7 @@
 **Purpose:** Quick reference for STPSF usage with Roman WFI grism spectroscopy.
 
 **Version Information:**
-- STPSF: caches target v2.3.0 (`psf_model.TARGET_STPSF_VERSION`), with data package `stpsf-data-2.3.0`. The vendored `psf-v1` caches were made with v2.1.0.
+- STPSF: caches target v2.3.1 (`psf_model.TARGET_STPSF_VERSION`), with data package `stpsf-data-2.3.0` (unchanged in 2.3.1). 2.3.1 applies the field-dependent Zernikes before the WFI pupil inversion (#196); plain 2.3.0 applied them mirrored, and caches from it are refused. The vendored `psf-v1` caches were made with v2.1.0.
 - Roman Optical Model: Phase C (Spring 2026) in v2.3.0; Cycle 10 (Sept 2024, GSFC) before that
 - Last Updated: 2026-11-05. The sections below were written for v2.2.0 and have not been reviewed against v2.3.0.
 

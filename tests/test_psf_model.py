@@ -25,6 +25,9 @@ import jax.numpy as jnp
 from roman_disperser import psf_utils
 from roman_disperser import psf_model
 
+# The STPSF version caches target; fake caches are labelled with it.
+_TV = psf_model.TARGET_STPSF_VERSION
+
 
 # ============================================================================
 # COORDINATE CONVERSION TESTS
@@ -1057,7 +1060,7 @@ class TestPSFCaching:
                 'name': Path(path).name,
                 'spatial_x': grid['x'], 'spatial_y': grid['y']})
         expected = ("psf_WFI05_PRISM_4x4x56_x50-4050_y202-4088_0.75-1.85um"
-                    "_fov5.0_os4_stpsf2.3.0.npz")
+                    f"_fov5.0_os4_stpsf{_TV}.npz")
         (tmp_path / expected).write_bytes(b"placeholder")
         result = psf_model.get_or_make_psf_payload(
             detector='WFI05', order='1', element='prism',
@@ -1336,7 +1339,7 @@ def _fake_generation(**kwargs):
             'psf_grid': np.ones((2, 2, 2, 8, 8)), 'wavelengths': kwargs['wavelengths'],
             'spatial_x': kwargs['spatial_grid']['x'],
             'spatial_y': kwargs['spatial_grid']['y'],
-            'oversample': 4, 'pixel_scale': 0.11, 'stpsf_version': '2.3.0',
+            'oversample': 4, 'pixel_scale': 0.11, 'stpsf_version': _TV,
             'add_ipc': kwargs['add_ipc'], **_CURRENT_PROVENANCE}
 
 
@@ -1378,15 +1381,15 @@ class TestCacheFilename:
     def test_documented_form(self):
         wl = np.arange(0.9, 2.01, 0.02)
         g = {'x': np.linspace(1, 4088, 4), 'y': np.linspace(1, 4088, 4)}
-        assert psf_model.TARGET_STPSF_VERSION == "2.3.0"
+        assert psf_model.TARGET_STPSF_VERSION == "2.3.1"
         assert psf_model.get_cache_filename('WFI05', '1', wl, g, 5.0, 4) == (
-            "psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz")
+            "psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.1.npz")
 
     def test_ipc_name_cannot_collide(self):
         off = psf_model.get_cache_filename('WFI05', '1', _WL, _GRID, 5.0, 4)
         on = psf_model.get_cache_filename('WFI05', '1', _WL, _GRID, 5.0, 4,
                                           add_ipc=True)
-        assert on == f"{_STEM}_stpsf2.3.0_ipc.npz" and on != off
+        assert on == f"{_STEM}_stpsf{_TV}_ipc.npz" and on != off
 
     def test_explicit_version(self):
         name = psf_model.get_cache_filename(
@@ -1395,8 +1398,8 @@ class TestCacheFilename:
 
     @pytest.mark.parametrize("name,expected", [
         (f"{_STEM}.npz", (_STEM, None, False)),
-        (f"{_STEM}_stpsf2.3.0.npz", (_STEM, "2.3.0", False)),
-        (f"{_STEM}_stpsf2.3.0_ipc.npz", (_STEM, "2.3.0", True)),
+        (f"{_STEM}_stpsf{_TV}.npz", (_STEM, _TV, False)),
+        (f"{_STEM}_stpsf{_TV}_ipc.npz", (_STEM, _TV, True)),
         (f"{_STEM}_stpsf2.3.1.dev4+gabc.npz", (_STEM, "2.3.1.dev4+gabc", False)),
         ("test_payload.npz", (None, None, False)),
     ])
@@ -1413,7 +1416,7 @@ class TestCacheFilename:
 
 def _good_file(directory, add_ipc=False, marker=1.0):
     suffix = "_ipc" if add_ipc else ""
-    return _fake_cache(directory, f"{_STEM}_stpsf2.3.0{suffix}.npz", "2.3.0",
+    return _fake_cache(directory, f"{_STEM}_stpsf{_TV}{suffix}.npz", _TV,
                        add_ipc, marker=marker)
 
 
@@ -1436,19 +1439,19 @@ class TestStrictLookup:
             warnings.simplefilter("error")
             payload = _lookup(tmp_path)
         assert _marker(payload) == 3.0
-        assert payload['stpsf_version'] == "2.3.0" and payload['add_ipc'] is False
+        assert payload['stpsf_version'] == _TV and payload['add_ipc'] is False
 
     def test_missing_names_file_command_and_others(self, tmp_path, no_stpsf,
                                                    no_generation):
         _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
-        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}_ipc.npz", _TV, True)
         _fake_cache(tmp_path, _STEM.replace("WFI05", "WFI06") + ".npz", "2.1.0")
         with pytest.raises(psf_model.PSFCacheNotFoundError) as info:
             _lookup(tmp_path)
         message = str(info.value)
-        assert f"{_STEM}_stpsf2.3.0.npz" in message
+        assert f"{_STEM}_stpsf{_TV}.npz" in message
         assert f"{_STEM}.npz (STPSF 2.1.0, add_ipc unknown, 2x2 nodes)" in message
-        assert f"{_STEM}_stpsf2.3.0_ipc.npz (STPSF 2.3.0, add_ipc True" in message
+        assert f"{_STEM}_stpsf{_TV}_ipc.npz (STPSF {_TV}, add_ipc True" in message
         assert "WFI06" not in message
         assert "ALLOW_PSF_FALLBACK" not in message
 
@@ -1529,28 +1532,28 @@ class TestStrictLookup:
         assert "generate_all_psf_caches" in str(info.value)
 
     @pytest.mark.parametrize("name,kwargs,needle", [
-        (f"{_STEM}_stpsf2.3.0.npz", dict(version=_ABSENT, add_ipc=False),
+        (f"{_STEM}_stpsf{_TV}.npz", dict(version=_ABSENT, add_ipc=False),
          "no STPSF version"),
-        (f"{_STEM}_stpsf2.3.0.npz", dict(version="unknown", add_ipc=False),
+        (f"{_STEM}_stpsf{_TV}.npz", dict(version="unknown", add_ipc=False),
          "no STPSF version"),
-        (f"{_STEM}_stpsf2.3.0.npz", dict(version="2.1.0", add_ipc=False),
+        (f"{_STEM}_stpsf{_TV}.npz", dict(version="2.1.0", add_ipc=False),
          "metadata says 2.1.0"),
-        (f"{_STEM}_stpsf2.3.0.npz", dict(version="2.3.0"), "no add_ipc metadata"),
-        (f"{_STEM}_stpsf2.3.0.npz", dict(version="2.3.0", add_ipc=True),
+        (f"{_STEM}_stpsf{_TV}.npz", dict(version=_TV), "no add_ipc metadata"),
+        (f"{_STEM}_stpsf{_TV}.npz", dict(version=_TV, add_ipc=True),
          "add_ipc=True"),
-        (f"{_STEM}_stpsf2.3.0.npz",
-         dict(version="2.3.0", add_ipc=False, spatial_x=np.array([16.0, 4055.0])),
+        (f"{_STEM}_stpsf{_TV}.npz",
+         dict(version=_TV, add_ipc=False, spatial_x=np.array([16.0, 4055.0])),
          "stored x nodes"),
-        (f"{_STEM}_stpsf2.3.0.npz",
-         dict(version="2.3.0", add_ipc=False, spatial_y=np.array([187.0, 4088.0])),
+        (f"{_STEM}_stpsf{_TV}.npz",
+         dict(version=_TV, add_ipc=False, spatial_y=np.array([187.0, 4088.0])),
          "stored y nodes"),
-        (f"{_STEM}_stpsf2.3.0.npz",
-         dict(version="2.3.0", add_ipc=False, wavelengths=np.array([1.0, 1.4])),
+        (f"{_STEM}_stpsf{_TV}.npz",
+         dict(version=_TV, add_ipc=False, wavelengths=np.array([1.0, 1.4])),
          "wavelengths"),
-        (f"{_STEM}_stpsf2.3.0.npz",
-         dict(version="2.3.0", add_ipc=False, oversample=np.array(2)), "oversample"),
-        (f"{_STEM}_stpsf2.3.0.npz",
-         dict(version="2.3.0", add_ipc=False, detector=np.array('WFI06', dtype='S')),
+        (f"{_STEM}_stpsf{_TV}.npz",
+         dict(version=_TV, add_ipc=False, oversample=np.array(2)), "oversample"),
+        (f"{_STEM}_stpsf{_TV}.npz",
+         dict(version=_TV, add_ipc=False, detector=np.array('WFI06', dtype='S')),
          "detector"),
     ])
     def test_exact_name_with_wrong_metadata_is_refused(
@@ -1566,7 +1569,7 @@ class TestStrictLookup:
         wl = np.arange(0.9, 2.01, 0.02)
         grid = psf_model.make_spatial_grid()
         name = psf_model.get_cache_filename('WFI05', '1', wl, grid, 5.0, 4)
-        _fake_cache(tmp_path, name, "2.3.0", wavelengths=wl,
+        _fake_cache(tmp_path, name, _TV, wavelengths=wl,
                     spatial_x=grid['x'], spatial_y=grid['y'])
         with pytest.raises(psf_model.PSFCacheNotFoundError) as info:
             psf_model.get_or_make_psf_payload(
@@ -1574,7 +1577,7 @@ class TestStrictLookup:
         assert "--no-skip" in str(info.value)
 
     def test_exact_name_unreadable_is_refused(self, tmp_path, no_stpsf, no_generation):
-        (tmp_path / f"{_STEM}_stpsf2.3.0.npz").write_bytes(b"not an npz")
+        (tmp_path / f"{_STEM}_stpsf{_TV}.npz").write_bytes(b"not an npz")
         with pytest.raises(psf_model.PSFCacheNotFoundError, match="cannot be read"):
             _lookup(tmp_path)
 
@@ -1602,15 +1605,15 @@ class TestStrictLookup:
         with pytest.warns(RuntimeWarning, match="allow_generate"):
             payload = _lookup(tmp_path, allow_generate=True, add_ipc=True)
         assert payload['add_ipc'] is True
-        assert [p.name for p in tmp_path.iterdir()] == [f"{_STEM}_stpsf2.3.0_ipc.npz"]
+        assert [p.name for p in tmp_path.iterdir()] == [f"{_STEM}_stpsf{_TV}_ipc.npz"]
         assert _lookup(tmp_path, add_ipc=True)['add_ipc'] is True
 
     def test_allow_generate_replaces_a_wrong_file(self, tmp_path, no_stpsf, monkeypatch):
         monkeypatch.setattr(psf_model, 'make_psf_payload', _fake_generation)
-        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.1.0", False)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}.npz", "2.1.0", False)
         with pytest.warns(RuntimeWarning, match="allow_generate"):
             _lookup(tmp_path, allow_generate=True)
-        assert _lookup(tmp_path)['stpsf_version'] == "2.3.0"
+        assert _lookup(tmp_path)['stpsf_version'] == _TV
 
     def test_force_regenerate_ignores_files(self, tmp_path, no_stpsf, monkeypatch):
         calls = []
@@ -1637,7 +1640,7 @@ class TestStrictLookup:
     def test_loaded_nodes_tolerate_float32(self, tmp_path, no_stpsf):
         grid = psf_model.make_spatial_grid("4x4", "16.3,4055.7,187.1,4087.9")
         name = psf_model.get_cache_filename('WFI05', '1', _WL, grid, 5.0, 4)
-        _fake_cache(tmp_path, name, "2.3.0", False,
+        _fake_cache(tmp_path, name, _TV, False,
                     psf_grid=np.ones((4, 4, 2, 8, 8), np.float32),
                     spatial_x=grid['x'].astype(np.float32),
                     spatial_y=grid['y'].astype(np.float32))
@@ -1715,7 +1718,7 @@ class TestNodeBoundsLookup:
                            spatial_y=grid['y'].astype(np.float32), **kw)
 
     def test_full_detector_stpsf_file_does_not_serve_default(self, tmp_path, no_stpsf):
-        self._write_full(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", add_ipc=False)
+        self._write_full(tmp_path, f"{_STEM}_stpsf{_TV}.npz", _TV, add_ipc=False)
         with pytest.raises(psf_model.PSFCacheNotFoundError) as info:
             _lookup_grid(tmp_path, psf_model.make_spatial_grid("2x2"))
         assert "x50-4050_y202-4088" in str(info.value)
@@ -1759,12 +1762,12 @@ class TestIPCSeparation:
 
     def test_metadata_overrides_a_misleading_name(self, tmp_path, no_stpsf):
         """A renamed IPC-on file must not satisfy an IPC-off request."""
-        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", True)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}.npz", _TV, True)
         with pytest.raises(psf_model.PSFCacheNotFoundError):
             _lookup(tmp_path)
 
     def test_known_state_beats_unknown_at_same_version(self, tmp_path, no_stpsf):
-        _fake_cache(tmp_path, f"{_STEM}.npz", "2.3.0", marker=1.0)
+        _fake_cache(tmp_path, f"{_STEM}.npz", _TV, marker=1.0)
         _good_file(tmp_path, add_ipc=True, marker=2.0)
         assert _marker(_lookup(tmp_path, add_ipc=True)) == 2.0
 
@@ -1797,32 +1800,32 @@ class TestCacheWarnings:
         assert payload['stpsf_version'] is None
 
     def test_filename_and_metadata_disagree(self, tmp_path, no_stpsf):
-        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.1.0")
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}.npz", "2.1.0")
         payload, record = _load_warnings(path)
         self._assert_one(record, path, "metadata says 2.1.0")
         assert payload['stpsf_version'] == "2.1.0"
 
     def test_new_version_no_ipc_metadata(self, tmp_path, no_stpsf):
-        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0")
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}.npz", _TV)
         payload, record = _load_warnings(path)
         self._assert_one(record, path, "no add_ipc metadata")
         assert payload['add_ipc'] is None
 
     def test_ipc_filename_and_metadata_disagree(self, tmp_path, no_stpsf):
-        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", False)
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}_ipc.npz", _TV, False)
         self._assert_one(_load_warnings(path)[1], path, "add_ipc=False")
 
     def test_installed_mismatch(self, tmp_path, monkeypatch):
         monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.4.0")
-        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}.npz", _TV, False)
         self._assert_one(_load_warnings(path)[1], path, "installed STPSF is 2.4.0")
 
     def test_clean_file_is_quiet(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.3.0")
-        path = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: _TV)
+        path = _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}.npz", _TV, False)
         payload, record = _load_warnings(path)
         assert record == []
-        assert payload['stpsf_version'] == "2.3.0" and payload['add_ipc'] is False
+        assert payload['stpsf_version'] == _TV and payload['add_ipc'] is False
 
     def test_no_stpsf_installed_path(self, tmp_path, no_stpsf):
         """Warnings fire without STPSF, and loading never imports it."""
@@ -1839,8 +1842,8 @@ class TestCacheWarnings:
         assert 'stpsf' not in sys.modules
 
     def test_legacy_stamped_210_gets_one_warning(self, tmp_path, monkeypatch):
-        """Also with STPSF 2.3.0 installed, when loaded directly."""
-        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.3.0")
+        """Also with the target STPSF installed, when loaded directly."""
+        monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: _TV)
         path = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
         with warnings.catch_warnings(record=True) as record:
             warnings.simplefilter("always")
@@ -1883,7 +1886,7 @@ class TestCacheWarnings:
 
     def test_labels_do_not_enter_jit_payloads(self, tmp_path, no_stpsf):
         from roman_disperser import jit_payload
-        on = _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True)
+        on = _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}_ipc.npz", _TV, True)
         off = _fake_cache(tmp_path, f"{_STEM}.npz", "2.1.0")
         results = [jit_payload.split_payload(
             psf_model.load_psf_payload(p, verbose=False),
@@ -1896,18 +1899,18 @@ class TestCacheWarnings:
 
     def test_generated_metadata_round_trip(self, tmp_path, no_stpsf):
         payload = psf_model.load_psf_payload(
-            _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0_ipc.npz", "2.3.0", True),
+            _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}_ipc.npz", _TV, True),
             verbose=False)
         assert payload['add_ipc'] is True
-        path = tmp_path / "again" / f"{_STEM}_stpsf2.3.0_ipc.npz"
+        path = tmp_path / "again" / f"{_STEM}_stpsf{_TV}_ipc.npz"
         psf_model.save_psf_payload(payload, path, verbose=False)
         with np.load(path) as data:
             assert bool(data['add_ipc']) is True
-            assert data['stpsf_version'].item() == b"2.3.0"
+            assert data['stpsf_version'].item() == _TV.encode()
 
     def test_save_does_not_invent_ipc_state(self, tmp_path, no_stpsf):
         payload = psf_model.load_psf_payload(
-            _fake_cache(tmp_path, f"{_STEM}.npz", "2.3.0"), verbose=False)
+            _fake_cache(tmp_path, f"{_STEM}.npz", _TV), verbose=False)
         path = tmp_path / "again.npz"
         psf_model.save_psf_payload(payload, path, verbose=False)
         with np.load(path) as data:
@@ -1926,7 +1929,7 @@ class TestFindCacheFile:
             tmp_path, "WFI05", "GRISM1", **self.KW) == target
 
     def test_wrong_metadata_is_refused(self, tmp_path, no_stpsf, monkeypatch):
-        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0")
+        _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}.npz", _TV)
         with pytest.raises(psf_model.PSFCacheNotFoundError, match="add_ipc"):
             psf_model.find_psf_cache_file(tmp_path, "WFI05", "GRISM1", **self.KW)
 
@@ -2003,10 +2006,10 @@ class TestGridOption:
     def test_default_range_in_name(self):
         assert self._name(psf_model.make_spatial_grid()) == (
             "psf_WFI05_GRISM1_4x4x56_x50-4050_y202-4088_0.90-2.00um_fov5.0_os4"
-            "_stpsf2.3.0.npz")
+            f"_stpsf{_TV}.npz")
         assert self._name(psf_model.make_spatial_grid("5x5")) == (
             "psf_WFI05_GRISM1_5x5x56_x50-4050_y202-4088_0.90-2.00um_fov5.0_os4"
-            "_stpsf2.3.0.npz")
+            f"_stpsf{_TV}.npz")
 
     def test_default_range_in_float32_name_unchanged(self):
         grid = psf_model.make_spatial_grid()
@@ -2016,7 +2019,7 @@ class TestGridOption:
     def test_full_detector_has_no_tag(self):
         grid = psf_model.make_spatial_grid("4x4", psf_model.FULL_DETECTOR_BOUNDS)
         assert self._name(grid) == (
-            "psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf2.3.0.npz")
+            f"psf_WFI05_GRISM1_4x4x56_0.90-2.00um_fov5.0_os4_stpsf{_TV}.npz")
         as_float32 = {k: v.astype(np.float32) for k, v in grid.items()}
         assert "_4x4x56_0.90" in self._name(as_float32)
 
@@ -2024,7 +2027,7 @@ class TestGridOption:
         grid = psf_model.make_spatial_grid("4x4", "16,4055,187,4088")
         assert self._name(grid) == (
             "psf_WFI05_GRISM1_4x4x56_x16-4055_y187-4088_0.90-2.00um_fov5.0_os4"
-            "_stpsf2.3.0.npz")
+            f"_stpsf{_TV}.npz")
 
     def test_axes_differ_in_name(self):
         """Counts keep the NYxNXxNWL order of the name."""
@@ -2051,7 +2054,7 @@ class TestGridOption:
         stem, version, ipc = psf_model._parse_cache_filename(
             self._name(grid, add_ipc=True))
         assert stem.endswith("_x16-4055_y187-4088_0.90-2.00um_fov5.0_os4")
-        assert (version, ipc) == ("2.3.0", True)
+        assert (version, ipc) == (_TV, True)
 
     def test_two_placements_coexist(self, tmp_path, no_stpsf, monkeypatch):
         monkeypatch.setattr(psf_model, 'make_psf_payload', _fake_generation)
@@ -2126,7 +2129,7 @@ _OLD_PLANES = ("FITSOpticalElement", "CoordinateInversion",
 
 
 class TestProvenance:
-    _NAME = f"{_STEM}_stpsf2.3.0.npz"
+    _NAME = f"{_STEM}_stpsf{_TV}.npz"
 
     def test_generation_records_provenance(self, fake_stpsf, tmp_path):
         payload = psf_model.make_psf_payload(
@@ -2162,7 +2165,7 @@ class TestProvenance:
         ({'stpsf_position_offset': 0}, "offset of 0 px"),
     ])
     def test_load_refuses_other_convention(self, tmp_path, no_stpsf, override, match):
-        path = _fake_cache(tmp_path, self._NAME, "2.3.0", add_ipc=False,
+        path = _fake_cache(tmp_path, self._NAME, _TV, add_ipc=False,
                            provenance=False, **_provenance_fields(**override))
         with pytest.raises(psf_model.PSFCacheProvenanceError, match=match):
             psf_model.load_psf_payload(path, verbose=False)
@@ -2172,7 +2175,7 @@ class TestProvenance:
     def test_unrecorded_convention_warns_on_load_and_fails_lookup(self, tmp_path,
                                                                   no_stpsf):
         """A cache from before provenance was recorded: plain STPSF 2.3.0 or not."""
-        path = _fake_cache(tmp_path, self._NAME, "2.3.0", add_ipc=False,
+        path = _fake_cache(tmp_path, self._NAME, _TV, add_ipc=False,
                            provenance=False)
         with pytest.warns(psf_model.PSFCacheVersionWarning,
                           match="does not record its optical plane order"):
@@ -2182,14 +2185,14 @@ class TestProvenance:
             _lookup(tmp_path)
 
     def test_current_convention_loads_silently(self, tmp_path, no_stpsf):
-        _fake_cache(tmp_path, self._NAME, "2.3.0", add_ipc=False)
+        _fake_cache(tmp_path, self._NAME, _TV, add_ipc=False)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             payload = _lookup(tmp_path)
         assert payload['stpsf_git'] == _CURRENT_PROVENANCE['stpsf_git']
 
     def test_resave_keeps_provenance(self, tmp_path, no_stpsf):
-        path = _fake_cache(tmp_path, self._NAME, "2.3.0", add_ipc=False)
+        path = _fake_cache(tmp_path, self._NAME, _TV, add_ipc=False)
         payload = psf_model.load_psf_payload(path, verbose=False)
         out = tmp_path / "copy" / self._NAME
         psf_model.save_psf_payload(payload, out, verbose=False)
@@ -2246,10 +2249,10 @@ class TestGeneration:
             tmp_path, orders=('1',), detectors=['WFI05'], wavelengths=_WL,
             spatial_grid=_GRID, verbose=False, add_ipc=add_ipc)
         assert res['failed'] == []
-        path = tmp_path / f"{_STEM}_stpsf2.3.0{suffix}.npz"
+        path = tmp_path / f"{_STEM}_stpsf{_TV}{suffix}.npz"
         with np.load(path) as data:
             assert bool(data['add_ipc']) is add_ipc
-            assert data['stpsf_version'].item() == b"2.3.0"
+            assert data['stpsf_version'].item() == _TV.encode()
             assert data['stpsf_filter'].item() == b"GRISM1"
         assert fake_stpsf.instances[0].options['add_ipc'] is add_ipc
 
@@ -2292,7 +2295,7 @@ class TestGeneration:
             spatial_grid=_GRID, n_workers=2, verbose=False, add_ipc=True)
         assert res['failed'] == []
         assert sent[0][-1] is True
-        assert (tmp_path / f"{_STEM}_stpsf2.3.0_ipc.npz").exists()
+        assert (tmp_path / f"{_STEM}_stpsf{_TV}_ipc.npz").exists()
 
     def test_skip_existing_is_per_ipc_state(self, fake_stpsf, tmp_path):
         kw = dict(orders=('1',), detectors=['WFI05'], wavelengths=_WL,
@@ -2314,7 +2317,7 @@ class TestGeneration:
             payload = _lookup(tmp_path, add_ipc=True, allow_generate=True)
         assert fake_stpsf.instances[0].options['add_ipc'] is True
         assert payload['add_ipc'] is True
-        assert (tmp_path / f"{_STEM}_stpsf2.3.0_ipc.npz").exists()
+        assert (tmp_path / f"{_STEM}_stpsf{_TV}_ipc.npz").exists()
         fake_stpsf.instances.clear()
         assert _lookup(tmp_path, add_ipc=True)['add_ipc'] is True
         assert fake_stpsf.instances == []
@@ -2323,7 +2326,7 @@ class TestGeneration:
         _lookup(None, add_ipc=True, allow_generate=True)
         assert fake_stpsf.instances[0].options['add_ipc'] is True
 
-    @pytest.mark.parametrize("version", ["2.1.0", "2.2.0", "2.3.0rc1"])
+    @pytest.mark.parametrize("version", ["2.1.0", "2.2.0", "2.3.0rc1", "2.3.0"])
     def test_refuses_old_stpsf_everywhere(self, fake_stpsf, tmp_path, monkeypatch,
                                           version):
         monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: version)
@@ -2349,7 +2352,7 @@ class TestGeneration:
 
     def test_old_stpsf_can_still_load_and_skip(self, fake_stpsf, tmp_path, monkeypatch):
         monkeypatch.setattr(psf_model, '_installed_stpsf_version', lambda: "2.1.0")
-        _fake_cache(tmp_path, f"{_STEM}_stpsf2.3.0.npz", "2.3.0", False)
+        _fake_cache(tmp_path, f"{_STEM}_stpsf{_TV}.npz", _TV, False)
         res = psf_model.generate_all_psf_caches(
             tmp_path, orders=('1',), detectors=['WFI05'], wavelengths=_WL,
             spatial_grid=_GRID, verbose=False)
@@ -2384,7 +2387,7 @@ class TestGeneration:
             spatial_grid=grid, verbose=False)
         assert res['failed'] == []
         path = tmp_path / ("psf_WFI05_GRISM1_2x3x2_x16-4055_y187-4088_1.00-1.50um"
-                           "_fov5.0_os4_stpsf2.3.0.npz")
+                           f"_fov5.0_os4_stpsf{_TV}.npz")
         payload = psf_model.load_psf_payload(path, verbose=False)
         assert payload['psf_grid'].shape[:2] == (2, 3)
         assert _lookup_grid(tmp_path, grid)['psf_grid'].shape[:2] == (2, 3)
@@ -2472,7 +2475,7 @@ class TestScripts:
             script.main()
         assert stop.value.code == 2
 
-    def _default_cache(self, directory, order, version="2.3.0", add_ipc=False):
+    def _default_cache(self, directory, order, version=_TV, add_ipc=False):
         wl = np.arange(0.9, 2.01, 0.02)
         grid = psf_model.make_spatial_grid()
         name = psf_model.get_cache_filename(
@@ -2552,9 +2555,9 @@ class TestScripts:
 
     def test_hydrate_sca_filter_accepts_new_names(self):
         from roman_disperser import hydrate
-        files = [(f"{_STEM}_stpsf2.3.0.npz", "u"),
-                 (f"{_STEM}_stpsf2.3.0_ipc.npz", "u"), (f"{_STEM}.npz", "u"),
-                 (_STEM.replace("WFI05", "WFI06") + "_stpsf2.3.0.npz", "u")]
+        files = [(f"{_STEM}_stpsf{_TV}.npz", "u"),
+                 (f"{_STEM}_stpsf{_TV}_ipc.npz", "u"), (f"{_STEM}.npz", "u"),
+                 (_STEM.replace("WFI05", "WFI06") + f"_stpsf{_TV}.npz", "u")]
         assert len(hydrate._filter_sca(files, [5])) == 3
 
 
@@ -2596,7 +2599,7 @@ class TestDriverGrid:
             bdi.setup_pipeline([5], psf_cache_dir=paths_only)
         message = str(info.value)
         assert ("psf_WFI05_GRISM0_4x4x56_x50-4050_y202-4088_0.90-2.00um_fov5.0_os4"
-                "_stpsf2.3.0.npz") in message
+                f"_stpsf{_TV}.npz") in message
         assert "--detectors WFI05 --orders 0" in message
 
     def test_setup_passes_grid_to_the_check(self, bdi, paths_only):

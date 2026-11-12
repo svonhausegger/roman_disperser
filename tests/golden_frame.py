@@ -393,7 +393,7 @@ def write_references(out_dir):
 
 
 def main():
-    # Rendering loads the exact PSF caches (STPSF 2.3.0, add_ipc off, default nodes).
+    # Rendering loads the exact PSF caches (target STPSF, add_ipc off, default nodes).
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out-dir", default=None,
                     help="destination (default: <data>/golden_frames/"

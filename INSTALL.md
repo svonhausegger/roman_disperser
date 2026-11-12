@@ -295,11 +295,13 @@ Most users hydrate. To rebuild instead:
   pixi run python scripts/build_source_catalog.py --sims 1
   pixi run python scripts/verify_source_catalog.py   # validate the build
   ```
-- **PSF caches** — require STPSF >= 2.3.0 (Python >= 3.12) and the data package
-  `stpsf-data-2.3.0` (about 184 MB tarball, 296 MB unpacked). `STPSF_PATH` must
+- **PSF caches** — require STPSF >= 2.3.1 (Python >= 3.12) and the data package
+  `stpsf-data-2.3.0` (2.3.1 uses the same data) (about 184 MB tarball, 296 MB unpacked). `STPSF_PATH` must
   point at the unpacked package; generation refuses to run without it, because
   STPSF would otherwise fall back to `~/data/stpsf-data` and download its latest
-  data there. Generation also refuses an older STPSF. About 2 hours:
+  data there. Generation also refuses an older STPSF, and any STPSF that inverts
+  the WFI pupil before the field-dependent aberrations (plain 2.3.0; fixed in
+  2.3.1 by STPSF #196). About 2 hours:
   ```bash
   curl -L -o stpsf-data-2.3.0.tar.gz \
     https://stsci.box.com/shared/static/6bddlzcocmty1fsvfgpxrbo2s836z90j.gz
@@ -308,7 +310,7 @@ Most users hydrate. To rebuild instead:
   export STPSF_PATH=~/refdata/stpsf-2.3.0
   pixi run python scripts/generate_psf_caches.py --workers 2
   ```
-  Files are named `..._os4_stpsf2.3.0.npz`. Caches default to no IPC in the PSF.
+  Files are named `..._os4_stpsf2.3.1.npz`. Caches default to no IPC in the PSF.
   With `--add-ipc` the PSF contains IPC and the file gets `_ipc` in its name.
   romanisim >= 0.16.0 applies IPC in `make_l1`, so wrapped images would count it
   twice. The pinned v0.15.0 applies none because of a bug (romanisim #383), so
@@ -331,8 +333,8 @@ Most users hydrate. To rebuild instead:
   pass `allow_generate=True` or `force_regenerate=True` to `get_or_make_psf_payload`.
 
   **The hydrated `psf-v1` / `psf-prism-v1` caches are not used.** They were made
-  with STPSF 2.1.0 under the old unversioned names, and runs need the STPSF 2.3.0
-  files. Until the 2.3.0 caches are released, generate them with
+  with STPSF 2.1.0 under the old unversioned names, and runs need the STPSF 2.3.1
+  files. Until the 2.3.1 caches are released, generate them with
   `scripts/generate_psf_caches.py` (about 10 minutes for all 54 SCA and filter
   pairs on 36 cores). The former opt-in `ROMAN_DISPERSER_ALLOW_PSF_FALLBACK` is gone.
 

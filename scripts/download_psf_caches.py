@@ -15,7 +15,7 @@ This script forwards any extra arguments (e.g. ``--force``, ``--sca``) to it;
     python scripts/download_psf_caches.py --element prism
 
 The current releases hold STPSF 2.1.0 caches under old names, which runs do not
-use; generate the STPSF 2.3.0 caches with scripts/generate_psf_caches.py until
+use; generate the STPSF 2.3.1 caches with scripts/generate_psf_caches.py until
 they are released (see INSTALL.md).
 """
 

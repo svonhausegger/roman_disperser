@@ -94,7 +94,7 @@ ASSETS = {
 # remote manifest in roman_disperser_data is the source of truth.
 # TODO(psf-v2): point "psf" / "psf_prism" at "psf-v2" / "psf-prism-v2" and
 # "golden_frames" at "golden-frames-v5" once those releases are published (the
-# STPSF 2.3.0 caches and the matching golden frames; publishing needs the
+# STPSF 2.3.1 caches and the matching golden frames; publishing needs the
 # maintainer's OK). Until then hydrate delivers the 2.1.0 caches, which runs do
 # not use, and the golden test skips when golden-frames-v5 is not present.
 DEFAULT_MANIFEST = {
@@ -267,7 +267,7 @@ def hydrate_asset(asset, tag, base, sca=None, force=False, dry_run=False,
     print(f"    {got} downloaded, {len(files) - got} already present -> {out}")
     if asset.key in ("psf", "psf_prism") and tag in ("psf-v1", "psf-prism-v1"):
         print(f"    note: {tag} has old STPSF 2.1.0 files, which runs do not use; "
-              f"generate the STPSF 2.3.0 caches with "
+              f"generate the STPSF 2.3.1 caches with "
               f"scripts/generate_psf_caches.py (see INSTALL.md)")
 
 

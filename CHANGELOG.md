@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**PSF caches target STPSF 2.3.1.** `TARGET_STPSF_VERSION` and the pixi floor
+move from 2.3.0 to 2.3.1, which applies the field-dependent Zernikes before the
+WFI pupil inversion (STPSF #196; plain 2.3.0 applied them mirrored). The data
+package stays `stpsf-data-2.3.0`. Caches are now named `..._stpsf2.3.1.npz`;
+2.3.0-labelled files are refused as older than the target.
+
 **STPSF 2.3.0 and exact PSF caches:** PSF caches now target STPSF 2.3.0
 (`psf_model.TARGET_STPSF_VERSION`), and a run needs the exact file. **The hydrated
 `psf-v1` and `psf-prism-v1` caches (STPSF 2.1.0) are no longer used**: runs need
